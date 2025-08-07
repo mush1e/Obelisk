@@ -6,6 +6,7 @@ import (
 
 	"github.com/mush1e/obelisk/internal/buffer"
 	"github.com/mush1e/obelisk/internal/message"
+	"github.com/mush1e/obelisk/internal/server"
 	"github.com/mush1e/obelisk/internal/storage"
 )
 
@@ -59,4 +60,13 @@ func main() {
 	for i, msg := range recent {
 		fmt.Printf("  %d: %s -> %s\n", i, msg.Key, msg.Value)
 	}
+
+	srv := server.NewServer(":8080")
+	if err := srv.Start(); err != nil {
+		fmt.Printf("Failed to start server: %v\n", err)
+		return
+	}
+
+	fmt.Println("Server running. Press Ctrl+C to stop...")
+	select {}
 }
