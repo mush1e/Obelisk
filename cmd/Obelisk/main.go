@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/mush1e/obelisk/internal/buffer"
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/internal/storage"
 )
@@ -39,5 +40,23 @@ func main() {
 		for i, msg := range messages {
 			fmt.Printf("  %d: %s -> %s\n", i, msg.Key, msg.Value)
 		}
+	}
+
+	buf := buffer.NewBuffer(3)
+
+	// Add some messages
+	buf.Push(message.Message{Key: "msg1", Value: "first"})
+	buf.Push(message.Message{Key: "msg2", Value: "second"})
+	buf.Push(message.Message{Key: "msg3", Value: "third"})
+
+	fmt.Printf("Buffer has %d messages\n", len(buf.GetRecent()))
+
+	// Add one more to trigger overwrite
+	buf.Push(message.Message{Key: "msg4", Value: "fourth"})
+
+	recent := buf.GetRecent()
+	fmt.Printf("After overwrite, buffer has %d messages:\n", len(recent))
+	for i, msg := range recent {
+		fmt.Printf("  %d: %s -> %s\n", i, msg.Key, msg.Value)
 	}
 }
