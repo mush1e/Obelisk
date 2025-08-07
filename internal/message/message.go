@@ -1,5 +1,10 @@
 package message
 
+// This package provides a message type for Obelisk.
+// It is used to store messages that are received from the network.
+// The message type is a struct that contains a timestamp, a key, and a value.
+// The message type also provides methods for serializing and deserializing messages.
+
 import (
 	"bytes"
 	"encoding/binary"

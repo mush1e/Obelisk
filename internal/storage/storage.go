@@ -1,5 +1,10 @@
 package storage
 
+// This package provides a storage type for Obelisk.
+// It is used to store messages that are received from the network.
+// The storage type is a struct that contains a filename and a buffer.
+// The storage type also provides methods for appending messages and reading all messages.
+
 import (
 	"encoding/binary"
 	"io"
