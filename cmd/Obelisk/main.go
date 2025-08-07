@@ -3,8 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"time"
 )
 
@@ -14,20 +15,8 @@ type Message struct {
 	Value     string    `json:"value"`
 }
 
-// Json Serialize
-func SerializeJSON(msg Message) ([]byte, error) {
-	return json.Marshal(msg)
-}
-
-// Json Deserialize
-func DeserializeJSON(data []byte) (Message, error) {
-	var msg Message
-	err := json.Unmarshal(data, &msg)
-	return msg, err
-}
-
 // Binary Serialize
-func SerializeBin(msg Message) ([]byte, error) {
+func Serialize(msg Message) ([]byte, error) {
 	var buf bytes.Buffer
 
 	// Write timestamp as int64 (Unix nanoseconds)
@@ -59,7 +48,7 @@ func SerializeBin(msg Message) ([]byte, error) {
 }
 
 // Binary Decerialize
-func DeserializeBin(data []byte) (Message, error) {
+func Deserialize(data []byte) (Message, error) {
 	var msg Message
 	buf := bytes.NewReader(data)
 
@@ -95,6 +84,74 @@ func DeserializeBin(data []byte) (Message, error) {
 	return msg, nil
 }
 
+func AppendMessage(filename string, msg Message) error {
+	msgBin, err := Serialize(msg)
+	if err != nil {
+		return err
+	}
+
+	// Open in append mode (creates file if it doesn't exist)
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Write length first
+	sizeBin := make([]byte, 4)
+	binary.LittleEndian.PutUint32(sizeBin, uint32(len(msgBin)))
+
+	if _, err := file.Write(sizeBin); err != nil {
+		return err
+	}
+
+	// Then write message
+	if _, err := file.Write(msgBin); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func ReadAllMessages(filename string) ([]Message, error) {
+	var messages []Message
+
+	// Open file for reading
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	for {
+		lengthBytes := make([]byte, 4)
+		_, err := file.Read(lengthBytes)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return messages, err
+		}
+
+		messageLength := binary.LittleEndian.Uint32(lengthBytes)
+		messageBytes := make([]byte, messageLength)
+
+		_, err = file.Read(messageBytes)
+		if err != nil {
+			return messages, err
+		}
+
+		msg, err := Deserialize(messageBytes)
+		if err != nil {
+			return messages, err
+		}
+
+		messages = append(messages, msg)
+	}
+
+	return messages, nil
+}
+
 func main() {
 	msg := Message{
 		Timestamp: time.Now(),
@@ -102,15 +159,28 @@ func main() {
 		Value:     "Hello, Obelisk!",
 	}
 
-	// Test JSON
-	jsonData, _ := SerializeJSON(msg)
-	msgFromJSON, _ := DeserializeJSON(jsonData)
-	fmt.Printf("JSON size: %d bytes\n", len(jsonData))
-	fmt.Printf("JSON works: %v\n", msg.Key == msgFromJSON.Key)
-
 	// Test Binary
-	binData, _ := SerializeBin(msg)
-	msgFromBin, _ := DeserializeBin(binData)
+	binData, _ := Serialize(msg)
+	msgFromBin, _ := Deserialize(binData)
 	fmt.Printf("Binary size: %d bytes\n", len(binData))
 	fmt.Printf("Binary works: %v\n", msg.Key == msgFromBin.Key)
+
+	// Test the file operations
+	msg1 := Message{time.Now(), "user1", "hello"}
+	msg2 := Message{time.Now(), "user2", "world"}
+
+	// Write messages
+	AppendMessage("test.log", msg1)
+	AppendMessage("test.log", msg2)
+
+	// Read them back
+	messages, err := ReadAllMessages("test.log")
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+	} else {
+		fmt.Printf("Read %d messages:\n", len(messages))
+		for i, msg := range messages {
+			fmt.Printf("  %d: %s -> %s\n", i, msg.Key, msg.Value)
+		}
+	}
 }
