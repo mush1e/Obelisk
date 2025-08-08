@@ -13,7 +13,9 @@ func main() {
 	gracefulShutdown := make(chan os.Signal, 1)
 	signal.Notify(gracefulShutdown, syscall.SIGINT, syscall.SIGTERM)
 
-	srv := server.NewServer(":8080")
+	logFilePath := "data/segments/test.log"
+
+	srv := server.NewServer(":8080", logFilePath)
 	if err := srv.Start(); err != nil {
 		fmt.Printf("Failed to start server: %v\n", err)
 		return

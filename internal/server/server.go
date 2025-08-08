@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
+	"github.com/mush1e/obelisk/internal/batch"
+	"github.com/mush1e/obelisk/internal/buffer"
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/pkg/protocol"
 )
@@ -19,13 +22,19 @@ type Server struct {
 	listener net.Listener
 	wg       sync.WaitGroup
 	quit     chan struct{}
+
+	// storage stuff
+	ringBuffer *buffer.Buffer
+	batcher    *batch.Batcher
 }
 
 // NewServer creates a new Server instance
-func NewServer(address string) *Server {
+func NewServer(address, logFilePath string) *Server {
 	return &Server{
-		address: address,
-		quit:    make(chan struct{}),
+		address:    address,
+		quit:       make(chan struct{}),
+		ringBuffer: buffer.NewBuffer(10),
+		batcher:    batch.NewBatcher(logFilePath, 100, time.Second*5),
 	}
 }
 
@@ -41,7 +50,7 @@ func (s *Server) Start() error {
 
 	s.wg.Add(1)
 	go s.acceptLoop()
-
+	s.batcher.Start()
 	return nil
 }
 
@@ -98,7 +107,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 
 			fmt.Printf("Received message - Key: %s, Value: %s\n", msg.Key, msg.Value)
-
+			s.ringBuffer.Push(msg)    // For fast reads
+			s.batcher.AddMessage(msg) // For batched storage
 			// Send simple response back
 			response := []byte("OK\n")
 			conn.Write(response)
@@ -115,7 +125,7 @@ func (s *Server) Stop() error {
 			return fmt.Errorf("failed to close listener: %w", err)
 		}
 	}
-
+	s.batcher.Stop()
 	s.wg.Wait()
 	fmt.Println("Server stopped")
 	return nil
