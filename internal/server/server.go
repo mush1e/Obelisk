@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"net"
 	"sync"
+
+	"github.com/mush1e/obelisk/internal/message"
+	"github.com/mush1e/obelisk/pkg/protocol"
 )
 
 // Server holds TCP server state
@@ -78,14 +81,27 @@ func (s *Server) handleConnection(conn net.Conn) {
 			fmt.Println("Closing connection:", conn.RemoteAddr())
 			return
 		default:
-			message, err := reader.ReadString('\n')
+			msgBytes, err := protocol.ReadMessage(reader)
 			if err != nil {
-				fmt.Println("Client disconnected:", conn.RemoteAddr())
+				if err.Error() == "EOF" {
+					fmt.Println("Client disconnected:", conn.RemoteAddr())
+				} else {
+					fmt.Println("Error receiving message from", conn.RemoteAddr(), ":", err)
+				}
 				return
 			}
 
-			fmt.Printf("Received: %s", message)
-			conn.Write([]byte("Echo: " + message))
+			msg, err := message.Deserialize(msgBytes)
+			if err != nil {
+				fmt.Println("Invalid message format:", err)
+				continue
+			}
+
+			fmt.Printf("Received message - Key: %s, Value: %s\n", msg.Key, msg.Value)
+
+			// Send simple response back
+			response := []byte("OK\n")
+			conn.Write(response)
 		}
 	}
 }
