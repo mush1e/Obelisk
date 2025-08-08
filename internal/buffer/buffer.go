@@ -7,6 +7,7 @@ import "github.com/mush1e/obelisk/internal/message"
 // The buffer is a ring buffer, which means that it will overwrite
 // the oldest message when it is full.
 
+// Buffer represents a queue (ring buffer) to keep track of recent events and for fast retrieval
 type Buffer struct {
 	data     []message.Message
 	head     int
@@ -15,6 +16,7 @@ type Buffer struct {
 	capacity int
 }
 
+// NewBuffer creates a new Buffer for messages
 func NewBuffer(capacity int) *Buffer {
 	return &Buffer{
 		data:     make([]message.Message, capacity),
@@ -25,6 +27,7 @@ func NewBuffer(capacity int) *Buffer {
 	}
 }
 
+// Push adds new messages to the ring buffer
 func (b *Buffer) Push(msg message.Message) {
 	b.data[b.tail] = msg
 	b.tail = (b.tail + 1) % b.capacity
@@ -37,6 +40,7 @@ func (b *Buffer) Push(msg message.Message) {
 	}
 }
 
+// Peak returns the most recent message which was recieved/processed
 func (b *Buffer) Peek() message.Message {
 	if b.size == 0 {
 		return message.Message{}
@@ -44,6 +48,7 @@ func (b *Buffer) Peek() message.Message {
 	return b.data[b.head]
 }
 
+// GetRecent gets all recent messages in our buffer, in order
 func (b *Buffer) GetRecent() []message.Message {
 	if b.size == 0 {
 		return []message.Message{}

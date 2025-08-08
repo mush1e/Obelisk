@@ -12,6 +12,9 @@ import (
 // It is used to batch messages together before sending them to the server.
 // This avoids doing unnecessary file writes.
 
+// Batcher represents a batcher for messages.
+// It is used to batch messages together before sending them to the log files.
+// This avoids doing unnecessary file writes.
 type Batcher struct {
 	buffer  []message.Message
 	maxSize uint32
@@ -21,6 +24,7 @@ type Batcher struct {
 	mtx     sync.RWMutex
 }
 
+// NewBatcher creates a new batcher for messages.
 func NewBatcher(logFile string, maxSize int, maxWait time.Duration) *Batcher {
 	return &Batcher{
 		buffer:  make([]message.Message, 0, maxSize),
@@ -31,6 +35,7 @@ func NewBatcher(logFile string, maxSize int, maxWait time.Duration) *Batcher {
 	}
 }
 
+// AddMessage adds a message to the batcher.
 func (b *Batcher) AddMessage(msg message.Message) error {
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
@@ -42,6 +47,8 @@ func (b *Batcher) AddMessage(msg message.Message) error {
 	return nil
 }
 
+// Start starts the batcher.
+// It starts a goroutine that periodically flushes the buffer to the log file.
 func (b *Batcher) Start() {
 	ticker := time.NewTicker(b.maxWait)
 	go func() {
@@ -67,10 +74,13 @@ func (b *Batcher) Start() {
 	}()
 }
 
+// Stop stops the batcher.
+// It closes the quit channel to signal the goroutine to stop.
 func (b *Batcher) Stop() {
 	close(b.quit)
 }
 
+// flush flushes the buffer to the log file.
 func (b *Batcher) flush() error {
 	for _, msg := range b.buffer {
 		if err := storage.AppendMessage(b.logFile, msg); err != nil {

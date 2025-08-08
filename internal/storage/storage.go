@@ -1,5 +1,10 @@
 package storage
 
+// This package provides storage functionality for messages.
+// It is responsible for appending and reading messages from a log file.
+// This log file represents a sequence of messages, each prefixed with its length.
+// It represents the single source of truth for all messages in the system.
+//
 import (
 	"bufio"
 	"os"

@@ -11,13 +11,15 @@ import (
 	"time"
 )
 
+// Message represents a message that is received from the network.
+// It contains a timestamp, a key, and a value.
 type Message struct {
 	Timestamp time.Time `json:"timestamp"`
 	Key       string    `json:"key"`
 	Value     string    `json:"value"`
 }
 
-// Binary Serialize
+// Serialize serializes a message into a byte slice.
 func Serialize(msg Message) ([]byte, error) {
 	var buf bytes.Buffer
 
@@ -49,7 +51,7 @@ func Serialize(msg Message) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Binary Decerialize
+// Deserialize converts a byte slice into a message.
 func Deserialize(data []byte) (Message, error) {
 	var msg Message
 	buf := bytes.NewReader(data)
