@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/mush1e/obelisk/internal/buffer"
@@ -11,6 +14,8 @@ import (
 )
 
 func main() {
+	gracefulShutdown := make(chan os.Signal, 1)
+	signal.Notify(gracefulShutdown, syscall.SIGINT, syscall.SIGTERM)
 	msg := message.Message{
 		Timestamp: time.Now(),
 		Key:       "user123",
@@ -68,5 +73,9 @@ func main() {
 	}
 
 	fmt.Println("Server running. Press Ctrl+C to stop...")
-	select {}
+	<-gracefulShutdown
+	fmt.Println("\nServer shutting down!")
+	if err := srv.Stop(); err != nil {
+		fmt.Println("error while graceful shutdown : ", err)
+	}
 }
