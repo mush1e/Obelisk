@@ -15,6 +15,7 @@ import (
 // It contains a timestamp, a key, and a value.
 type Message struct {
 	Timestamp time.Time `json:"timestamp"`
+	Topic     string    `json:"topic"`
 	Key       string    `json:"key"`
 	Value     string    `json:"value"`
 }
@@ -25,6 +26,16 @@ func Serialize(msg Message) ([]byte, error) {
 
 	// Write timestamp as int64 (Unix nanoseconds)
 	if err := binary.Write(&buf, binary.LittleEndian, msg.Timestamp.UnixNano()); err != nil {
+		return nil, err
+	}
+
+	// Topic
+	topicBytes := []byte(msg.Topic)
+	topicLen := uint32(len(topicBytes))
+	if err := binary.Write(&buf, binary.LittleEndian, topicLen); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&buf, binary.LittleEndian, topicBytes); err != nil {
 		return nil, err
 	}
 
@@ -56,12 +67,22 @@ func Deserialize(data []byte) (Message, error) {
 	var msg Message
 	buf := bytes.NewReader(data)
 
-	// Read timestamp
+	// Read Timestamp
 	var ts int64
 	if err := binary.Read(buf, binary.LittleEndian, &ts); err != nil {
 		return msg, err
 	}
 	msg.Timestamp = time.Unix(0, ts)
+
+	// Read Topic
+	var TopicLen uint32
+	if err := binary.Read(buf, binary.LittleEndian, &TopicLen); err != nil {
+		return msg, err
+	}
+	TopicBytes := make([]byte, TopicLen)
+	if err := binary.Read(buf, binary.LittleEndian, &TopicBytes); err != nil {
+		return msg, err
+	}
 
 	// Read Key
 	var keyLen uint32

@@ -27,9 +27,10 @@ func main() {
 	fmt.Println(strings.Repeat("=", 50))
 
 	for i, msg := range messages {
-		fmt.Printf("%d. [%s] %s -> %s\n",
+		fmt.Printf("%d. %s | %s %s -> %s\n",
 			i+1,
 			msg.Timestamp.Format("15:04:05.000"),
+			msg.Topic,
 			msg.Key,
 			msg.Value)
 	}

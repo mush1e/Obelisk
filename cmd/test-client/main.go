@@ -44,6 +44,7 @@ func testSizeBatching(writer *bufio.Writer) {
 	for i := range 150 {
 		msg := message.Message{
 			Timestamp: time.Now(),
+			Topic:     fmt.Sprintf("topic-%d", i%3),
 			Key:       fmt.Sprintf("batch-user%d", i),
 			Value:     fmt.Sprintf("Size test message %d", i),
 		}
@@ -68,6 +69,7 @@ func testTimeBatching(writer *bufio.Writer) {
 	for i := range 5 {
 		msg := message.Message{
 			Timestamp: time.Now(),
+			Topic:     fmt.Sprintf("topic-%d", i%3),
 			Key:       fmt.Sprintf("time-user%d", i),
 			Value:     fmt.Sprintf("Time test message %d", i),
 		}
@@ -90,6 +92,7 @@ func testRealisticLoad(writer *bufio.Writer) {
 	for i := range 20 {
 		msg := message.Message{
 			Timestamp: time.Now(),
+			Topic:     fmt.Sprintf("topic-%d", i%3),
 			Key:       fmt.Sprintf("real-user%d", i),
 			Value:     fmt.Sprintf("Realistic message %d", i),
 		}
