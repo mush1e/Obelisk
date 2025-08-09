@@ -24,17 +24,17 @@ type Server struct {
 	quit     chan struct{}
 
 	// storage stuff
-	ringBuffer *buffer.Buffer
-	batcher    *batch.Batcher
+	topicBuffers *buffer.TopicBuffers
+	batcher      *batch.Batcher
 }
 
 // NewServer creates a new Server instance
 func NewServer(address, logFilePath string) *Server {
 	return &Server{
-		address:    address,
-		quit:       make(chan struct{}),
-		ringBuffer: buffer.NewBuffer(10),
-		batcher:    batch.NewBatcher(logFilePath, 100, time.Second*5),
+		address:      address,
+		quit:         make(chan struct{}),
+		topicBuffers: buffer.NewTopicBuffers(10),
+		batcher:      batch.NewBatcher(logFilePath, 100, time.Second*5),
 	}
 }
 
@@ -107,7 +107,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 
 			fmt.Printf("Received message - Key: %s, Value: %s\n", msg.Key, msg.Value)
-			s.ringBuffer.Push(msg)    // For fast reads
+			s.topicBuffers.Push(msg)  // For fast reads
 			s.batcher.AddMessage(msg) // For batched storage
 			// Send simple response back
 			response := []byte("OK\n")
