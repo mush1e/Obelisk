@@ -1,202 +1,413 @@
 # Obelisk
 
-A high-performance, fault-tolerant, distributed event log system designed to be the single source of truth for microservices, real-time systems, and event-driven architectures.
+A high-performance, fault-tolerant message broker built in Go that serves as the single source of truth for microservices, real-time systems, and event-driven architectures. Obelisk combines the reliability of Kafka with the simplicity of Redis, delivering enterprise-grade messaging with minimal operational overhead.
 
-## Overview
+## 🚀 Features
 
-Obelisk is a distributed event log system built in Go that provides reliable message storage and retrieval capabilities. It implements a commit log architecture with efficient binary serialization, ring buffer memory management, and persistent storage designed for high-throughput scenarios.
+### Core Messaging
+- **Topic-based Architecture**: Organize messages into logical topics with independent storage and indexing
+- **Binary Protocol**: Efficient binary serialization (~38 bytes vs 90 for JSON) for minimal network overhead
+- **Offset-based Consumers**: Track message consumption progress with commit/rollback capabilities
+- **At-least-once Delivery**: Guaranteed message delivery with crash recovery support
 
-## Features
+### Performance & Reliability
+- **Batched Disk I/O**: Smart batching system (size + time triggers) minimizes disk operations
+- **Memory-mapped Indexes**: Fast message lookup using offset-to-position mapping
+- **Ring Buffer Caching**: In-memory buffers for recent messages enable sub-millisecond reads
+- **Thread-safe Operations**: Concurrent producers and consumers with proper mutex protection
 
-- **High Performance**: Efficient binary serialization/deserialization for minimal overhead
-- **Ring Buffer Architecture**: Memory-efficient circular buffer for recent message caching
-- **Persistent Storage**: Append-only log files with length-prefixed message format
-- **Fault Tolerant**: Designed for reliability and data consistency
-- **Event-Driven**: Perfect for microservices and real-time event processing
-- **Single Source of Truth**: Centralized event logging for distributed systems
+### Operational Excellence
+- **Zero Configuration**: Works out of the box with sensible defaults
+- **Graceful Shutdown**: Clean resource cleanup with proper signal handling
+- **Topic Auto-creation**: Topics created automatically on first message
+- **File-based Storage**: Simple, debuggable storage format with no external dependencies
 
-## Architecture
+## 🏗️ Architecture
 
-Obelisk consists of several core components:
-
-### Message System
-- **Timestamp**: Nanosecond precision using Unix time
-- **Key-Value Structure**: Flexible message format with string keys and values
-- **Binary Serialization**: Compact binary format using little-endian encoding
-
-### Storage Engine
-- **Append-Only Logs**: Immutable log segments stored on disk
-- **Length-Prefixed Format**: Each message prefixed with 4-byte length header
-- **Sequential Access**: Optimized for high-throughput sequential writes
-
-### Buffer Management
-- **Ring Buffer**: Fixed-size circular buffer for recent messages
-- **Automatic Overflow**: Oldest messages automatically evicted when buffer fills
-- **O(1) Operations**: Constant time push and peek operations
-
-## Installation
-
-```bash
-git clone https://github.com/mush1e/obelisk.git
-cd obelisk
-go mod tidy
+### High-Level Overview
+```
+┌─────────────┐    TCP/Binary     ┌─────────────────┐
+│  Producers  │ ─────────────────▶│  Obelisk Server │
+│             │                   │                 │
+└─────────────┘                   └─────────────────┘
+                                           │
+                              ┌────────────┼────────────┐
+                              ▼            ▼            ▼
+                    ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+                    │  Ring Buffers   │ │  Batch Manager  │ │ Topic Storage   │
+                    │   (Fast Reads)  │ │ (Efficient I/O) │ │ (Persistence)   │
+                    └─────────────────┘ └─────────────────┘ └─────────────────┘
+                                                                      │
+                                                            ┌─────────┼─────────┐
+                                                            ▼         ▼         ▼
+                                                    ┌──────────────────────────────┐
+                                                    │      Per-Topic Storage       │
+                                                    │  ┌──────────┐┌─────────────┐ │
+                                                    │  │ .log     ││    .idx     │ │
+                                                    │  │(messages)││(offset→pos) │ │
+                                                    │  └──────────┘└─────────────┘ │
+                                                    └──────────────────────────────┘
+                                                                      │
+                                                                      ▼
+                                                            ┌─────────────────┐
+                                                            │   Consumers     │
+                                                            │ (Poll/Commit)   │
+                                                            └─────────────────┘
 ```
 
-## Usage
+### Message Flow Architecture
+```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                OBELISK SERVER                                       │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  Producer Message ──▶ │ TCP Handler │ ──▶ │ Ring Buffer │                           │
+│                                     │                   │                           │
+│                                     └──▶ │ Topic Batcher │ ──▶ │ Disk Storage │     │
+│                                                                │                    │
+│                                                                │  topic-0.log       │
+│                                                                │  topic-0.idx       │
+│                                                                │  topic-1.log       │
+│                                                                │  topic-1.idx       │
+│                                                                                     │
+│                                                                                     │
+│  Consumer Poll Request ──▶ │ Storage Layer │ ──▶ │ Index Lookup │ ──▶ Response      │
+│                                            │                                        │
+│                                            └──▶  │ File Seek & Read │               │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-### Basic Example
+### Storage Layer Deep Dive
+```
+Topic: user-events
+├── user-events.log (Binary Messages)
+│   ┌──────────────────────────────────────┐
+│   │ [Length][Timestamp][Topic][Key][Value] │ ← Message 0
+│   │ [Length][Timestamp][Topic][Key][Value] │ ← Message 1  
+│   │ [Length][Timestamp][Topic][Key][Value] │ ← Message 2
+│   └──────────────────────────────────────┘
+│
+└── user-events.idx (Offset Index)
+    ┌─────────────────────────────────────┐
+    │ [0] → byte position 0               │
+    │ [1] → byte position 156             │ 
+    │ [2] → byte position 312             │
+    └─────────────────────────────────────┘
 
+Consumer tracks: "I'm at offset 1" → Index lookup → Seek to byte 156 → Read from there
+```
+
+## 🛠️ Installation & Setup
+
+### Prerequisites
+- Go 1.21 or higher
+- 500MB disk space (for logs and indexes)
+
+### Quick Start
+```bash
+# Clone the repository
+git clone https://github.com/mush1e/obelisk.git
+cd obelisk
+
+# Install dependencies
+go mod tidy
+
+# Create data directories
+mkdir -p data/topics
+
+# Start the Obelisk server
+go run cmd/Obelisk/main.go
+```
+
+Server starts on `:8080` and creates topic files in `data/topics/`
+
+## 📚 Usage Examples
+
+### Producer (Sending Messages)
 ```go
 package main
 
 import (
+    "bufio"
+    "net"
     "time"
+    
     "github.com/mush1e/obelisk/internal/message"
-    "github.com/mush1e/obelisk/internal/storage"
-    "github.com/mush1e/obelisk/internal/buffer"
+    "github.com/mush1e/obelisk/pkg/protocol"
 )
 
 func main() {
-    // Create a message
+    // Connect to Obelisk server
+    conn, _ := net.Dial("tcp", "localhost:8080")
+    defer conn.Close()
+    
+    writer := bufio.NewWriter(conn)
+    
+    // Create and send message
     msg := message.Message{
         Timestamp: time.Now(),
+        Topic:     "user-events",
         Key:       "user123",
-        Value:     "Hello, Obelisk!",
+        Value:     "User logged in",
     }
     
-    // Store to disk
-    storage.AppendMessage("data/segments/app.log", msg)
+    msgBytes, _ := message.Serialize(msg)
+    protocol.WriteMessage(writer, msgBytes)
+}
+```
+
+### Consumer (Reading Messages)
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/mush1e/obelisk/internal/consumer"
+)
+
+func main() {
+    // Create consumer for topic
+    consumer := consumer.NewConsumer("data/topics", "user-events")
     
-    // Use ring buffer for recent messages
-    buf := buffer.NewBuffer(1000)
-    buf.Push(msg)
-    
-    // Retrieve recent messages
-    recent := buf.GetRecent()
+    for {
+        // Poll for new messages
+        messages, _ := consumer.Poll("user-events")
+        
+        if len(messages) > 0 {
+            // Process messages
+            for _, msg := range messages {
+                fmt.Printf("Processing: %s -> %s\n", msg.Key, msg.Value)
+            }
+            
+            // Commit progress (enables crash recovery)
+            offset, _ := consumer.GetCurrentOffset("user-events")
+            consumer.Commit("user-events", offset + uint64(len(messages)))
+        }
+        
+        time.Sleep(1 * time.Second)
+    }
 }
 ```
 
-### Message Serialization
-
+### Advanced Consumer Operations
 ```go
-// Serialize message to binary
-data, err := message.Serialize(msg)
-if err != nil {
-    log.Fatal(err)
-}
+// Subscribe to multiple topics
+consumer := consumer.NewConsumer("data/topics", "orders", "payments", "notifications")
 
-// Deserialize from binary
-restoredMsg, err := message.Deserialize(data)
-if err != nil {
-    log.Fatal(err)
-}
+// Get topic statistics
+count, _ := consumer.GetTopicMessageCount("orders")
+fmt.Printf("Total messages in orders: %d\n", count)
+
+// Reset to replay all messages
+consumer.Reset("orders")
+
+// Check current position
+offset, _ := consumer.GetCurrentOffset("orders")
+fmt.Printf("Currently at offset: %d\n", offset)
 ```
 
-### Persistent Storage
+## 🧪 Testing & Examples
 
-```go
-// Append messages to log file
-err := storage.AppendMessage("mylog.log", msg)
-if err != nil {
-    log.Fatal(err)
-}
+### Built-in Test Clients
 
-// Read all messages from log file
-messages, err := storage.ReadAllMessages("mylog.log")
-if err != nil {
-    log.Fatal(err)
-}
-```
-
-### Ring Buffer Operations
-
-```go
-// Create buffer with capacity of 100
-buf := buffer.NewBuffer(100)
-
-// Add messages
-buf.Push(message1)
-buf.Push(message2)
-
-// Peek at oldest message
-oldest := buf.Peek()
-
-// Get all recent messages
-allRecent := buf.GetRecent()
-```
-
-## Running the Example
-
+**Producer Test Client:**
 ```bash
-# Create data directory
-mkdir -p data/segments
+# Send 150 messages quickly (tests batching)
+go run cmd/test-client/main.go -test=size
 
-# Run the main example
-go run cmd/Obelisk/main.go
+# Send messages with delays (tests time-based flushing)  
+go run cmd/test-client/main.go -test=time
+
+# Realistic workload simulation
+go run cmd/test-client/main.go -test=realistic
 ```
 
-This will demonstrate:
-- Binary serialization performance
-- File-based message storage
-- Ring buffer overflow behavior
+**Consumer Test Client:**
+```bash
+# Single poll (get messages once)
+go run cmd/test-consumer/main.go -topic=topic-0 -mode=poll
 
-## File Structure
+# Continuous polling (keep checking for new messages)
+go run cmd/test-consumer/main.go -topic=topic-1 -mode=continuous
+
+# Reset and replay from beginning
+go run cmd/test-consumer/main.go -topic=topic-2 -mode=reset
+```
+
+**Read All Messages:**
+```bash
+# Read all topics
+go run cmd/test-reader/main.go
+
+# Read specific directory
+go run cmd/test-reader/main.go /path/to/topics
+```
+
+### End-to-End Test Flow
+```bash
+# Terminal 1: Start server
+go run cmd/Obelisk/main.go
+
+# Terminal 2: Send test messages
+go run cmd/test-client/main.go -test=realistic
+
+# Terminal 3: Start consumer
+go run cmd/test-consumer/main.go -topic=topic-1 -mode=continuous
+
+# Terminal 2: Send more messages (watch consumer pick them up)
+go run cmd/test-client/main.go -test=size
+```
+
+## 🏢 Production Use Cases
+
+### Real-time Event Processing
+```
+┌─────────────────┐    ┌─────────────┐    ┌─────────────────┐
+│   Web App       │───▶│  Obelisk    │───▶│  Analytics      │
+│ (User Actions)  │    │ Topic:      │    │  Service        │
+│                 │    │ "clicks"    │    │                 │
+└─────────────────┘    └─────────────┘    └─────────────────┘
+```
+
+### Microservices Coordination
+```
+┌─────────────────┐    ┌─────────────┐    ┌─────────────────┐
+│   Order         │───▶│  Obelisk    │───▶│  Inventory      │
+│   Service       │    │ Topic:      │    │  Service        │
+│                 │    │ "orders"    │    │                 │
+└─────────────────┘    └─────────────┘    └─────────────────┘
+                                      └───▶┌─────────────────┐
+                                           │  Payment        │
+                                           │  Service        │
+                                           └─────────────────┘
+```
+
+### IoT Data Collection
+```
+┌─────────────────┐    ┌─────────────┐    ┌─────────────────┐
+│   1000s of      │───▶│  Obelisk    │───▶│  Time Series    │
+│   Sensors       │    │ Topic:      │    │  Database       │
+│                 │    │ "sensors"   │    │                 │
+└─────────────────┘    └─────────────┘    └─────────────────┘
+```
+
+
+## 🗂️ Project Structure
 
 ```
 obelisk/
-├── cmd/Obelisk/           # Main application entry point
+├── cmd/
+│   ├── Obelisk/main.go         # Server entry point
+│   ├── test-client/main.go     # Producer test client
+│   ├── test-consumer/main.go   # Consumer test client
+│   └── test-reader/main.go     # Debug message reader
 ├── internal/
-│   ├── buffer/            # Ring buffer implementation
-│   ├── message/           # Message types and serialization
-│   └── storage/           # Persistent storage operations
-├── data/segments/         # Log file storage directory
-├── .gitignore
+│   ├── batch/                  # Batched disk writes
+│   │   └── batcher.go         # TopicBatcher with per-topic batching
+│   ├── buffer/                 # Ring buffer for fast reads
+│   │   ├── buffer.go          # TopicBuffers + Buffer implementation
+│   │   └── buffer_test.go     # Unit tests
+│   ├── consumer/               # Consumer API
+│   │   └── consumer.go        # Poll/Commit/Reset functionality
+│   ├── message/                # Message format
+│   │   ├── message.go         # Binary serialization
+│   │   └── message_test.go    # Serialization tests
+│   ├── server/                 # TCP server
+│   │   └── server.go          # Connection handling + routing
+│   └── storage/                # Persistent storage
+│       ├── storage.go         # Main storage interface
+│       ├── index.go           # Offset-to-position indexing
+│       └── storage_test.go    # Storage tests
+├── pkg/
+│   └── protocol/              # Wire protocol
+│       └── protocol.go        # Length-prefixed binary protocol
+├── data/topics/               # Topic storage (created at runtime)
+│   ├── topic-0.log           # Message data
+│   ├── topic-0.idx           # Offset index
+│   ├── topic-1.log
+│   └── topic-1.idx
+├── go.mod
 ├── LICENSE
 └── README.md
 ```
 
-## Performance Characteristics
+## 🛣️ Roadmap
 
-- **Serialization**: Compact binary format with minimal overhead
-- **Storage**: Append-only design optimized for write-heavy workloads
-- **Memory**: Ring buffer provides O(1) access to recent messages
-- **Scalability**: Designed for high-throughput distributed environments
+### Phase 2: Core Features (Current) ✅
+- [x] Topic-based messaging
+- [x] Consumer offset tracking  
+- [x] Indexed storage for fast seeks
+- [x] Batched disk I/O
+- [x] Ring buffer caching
+- [x] Binary protocol optimization
 
-## Use Cases
+### Phase 3: Enhanced APIs (Next)
+- [ ] HTTP/REST API for easier integration
+- [ ] gRPC support for high-performance clients
+- [ ] Consumer groups (multiple consumers sharing work)
+- [ ] Message retention policies
+- [ ] Topic compaction
+- [ ] Metrics and monitoring endpoints
 
-- **Event Sourcing**: Store and replay application events
-- **Message Queuing**: Reliable message delivery between services  
-- **Audit Logging**: Immutable log of system events
-- **Real-time Analytics**: Stream processing of live events
-- **Microservices Communication**: Inter-service event coordination
-- **Data Replication**: Event-driven data synchronization
+### Phase 4: Distributed Systems (Future)
+- [ ] Multi-node clustering
+- [ ] Leader election and consensus
+- [ ] Cross-datacenter replication
+- [ ] Automatic partitioning
+- [ ] Load balancing
 
-## Contributing
+### Phase 5: Enterprise Features (Future)
+- [ ] Authentication and authorization
+- [ ] TLS encryption
+- [ ] Schema registry
+- [ ] Dead letter queues
+- [ ] Message tracing
+- [ ] Backup and restore
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+## 🤝 Contributing
 
-## License
+We welcome contributions! Here's how to get started:
+
+1. **Fork the repository**
+2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
+3. **Make your changes** with tests
+4. **Run the test suite**: `go test ./...`
+5. **Commit your changes**: `git commit -m 'Add amazing feature'`
+6. **Push to the branch**: `git push origin feature/amazing-feature`
+7. **Open a Pull Request**
+
+### Development Setup
+```bash
+# Install development dependencies
+go mod tidy
+
+# Run tests
+go test ./...
+
+# Run integration tests
+make test-integration
+
+# Start development server
+go run cmd/Obelisk/main.go
+```
+
+## 📜 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Roadmap
+## 🙏 Acknowledgments
 
-- [ ] Distributed consensus implementation
-- [ ] HTTP/gRPC API server
-- [ ] Message compaction and cleanup
-- [ ] Multi-segment log management  
-- [ ] Replication and clustering
-- [ ] Metrics and monitoring
-- [ ] Client libraries for multiple languages
+- Inspired by Apache Kafka's distributed log architecture
+- Binary protocol design influenced by Redis and MessagePack
+- Batching strategy adapted from RocksDB and LevelDB
 
-## Author
+## 📞 Support
 
-**Mustafa Siddiqui** - [@mush1e](https://github.com/mush1e)
+- **Issues**: [GitHub Issues](https://github.com/mush1e/obelisk/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/mush1e/obelisk/discussions)
+- **Documentation**: [Wiki](https://github.com/mush1e/obelisk/wiki)
 
 ---
 
-*Obelisk: Standing tall as your distributed system's source of truth.*
+**Obelisk: Standing tall as your distributed system's source of truth.** 🗿
