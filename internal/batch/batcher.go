@@ -1,7 +1,10 @@
 package batch
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -9,99 +12,151 @@ import (
 	"github.com/mush1e/obelisk/internal/storage"
 )
 
-// This package provides a batcher for messages.
-// It is used to batch messages together before sending them to the server.
-// This avoids doing unnecessary file writes.
-
-// Batcher represents a batcher for messages.
-// It is used to batch messages together before sending them to the log files.
-// This avoids doing unnecessary file writes.
-type Batcher struct {
-	buffer  []message.Message
+type TopicBatcher struct {
+	batches map[string]*TopicBatch
+	baseDir string
 	maxSize uint32
 	maxWait time.Duration
-	logFile string
 	quit    chan struct{}
 	mtx     sync.RWMutex
 }
 
-// NewBatcher creates a new batcher for messages.
-func NewBatcher(logFile string, maxSize int, maxWait time.Duration) *Batcher {
-	return &Batcher{
-		buffer:  make([]message.Message, 0, maxSize),
-		maxSize: uint32(maxSize),
+type TopicBatch struct {
+	buffer  []message.Message
+	index   *storage.OffsetIndex
+	logFile string
+	idxFile string
+	mtx     sync.RWMutex
+}
+
+func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration) *TopicBatcher {
+	return &TopicBatcher{
+		batches: make(map[string]*TopicBatch),
+		baseDir: baseDir,
+		maxSize: maxSize,
 		maxWait: maxWait,
-		logFile: logFile,
 		quit:    make(chan struct{}),
 	}
 }
 
-// AddMessage adds a message to the batcher.
-func (b *Batcher) AddMessage(msg message.Message) error {
-	b.mtx.Lock()
-	defer b.mtx.Unlock()
-
-	b.buffer = append(b.buffer, msg)
-	if uint32(len(b.buffer)) >= b.maxSize {
-		return b.flush()
+func (tb *TopicBatcher) Start() error {
+	if err := os.MkdirAll(tb.baseDir, 0755); err != nil {
+		return errors.New("failed to create base directory " + err.Error())
 	}
-	return nil
-}
-
-// Start starts the batcher.
-// It starts a goroutine that periodically flushes the buffer to the log file.
-func (b *Batcher) Start() {
-	ticker := time.NewTicker(b.maxWait)
+	ticker := time.NewTicker(tb.maxWait)
 	go func() {
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				b.mtx.Lock()
-				if len(b.buffer) > 0 {
-					_ = b.flush()
-				}
-				b.mtx.Unlock()
-			case <-b.quit:
-				// final flush
-				b.mtx.Lock()
-				if len(b.buffer) > 0 {
-					_ = b.flush()
-				}
-				b.mtx.Unlock()
+				tb.FlushAll()
+			case <-tb.quit:
+				tb.FlushAll()
 				return
 			}
 		}
 	}()
+	return nil
 }
 
-// Stop stops the batcher.
-// It closes the quit channel to signal the goroutine to stop.
-func (b *Batcher) Stop() {
-	close(b.quit)
+func (tb *TopicBatcher) FlushAll() {
+	tb.mtx.RLock()
+	defer tb.mtx.RUnlock()
+
+	for topic, batch := range tb.batches {
+		if len(batch.buffer) == 0 {
+			continue
+		}
+		if err := tb.flushTopic(tb.batches[topic]); err != nil {
+			fmt.Printf("[BATCHER] error flushing topic %s: %v\n", topic, err)
+		}
+
+	}
 }
 
-// flush flushes the buffer to the log file.
-func (b *Batcher) flush() error {
-	if len(b.buffer) == 0 {
-		return nil // Nothing to flush
+func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
+	if len(batch.buffer) == 0 {
+		return nil
 	}
 
-	fmt.Printf("[BATCHER] Flushing %d messages to disk...\n", len(b.buffer))
+	batch.mtx.Lock()
+	defer batch.mtx.Unlock()
+
+	fmt.Printf("[BATCHER] Flushing %d messages for topic to disk...\n", len(batch.buffer))
 	start := time.Now()
 
-	for _, msg := range b.buffer {
-		topic := msg.Topic
-		logPath := b.logFile + topic + ".log"
-		if err := storage.AppendMessage(logPath, msg); err != nil {
-			return err
+	// Flush all messages in the batch
+	for _, msg := range batch.buffer {
+		if err := storage.AppendMessage(batch.logFile, batch.idxFile, msg, batch.index); err != nil {
+			return fmt.Errorf("failed to append message: %w", err)
 		}
 	}
 
 	duration := time.Since(start)
-	fmt.Printf("[BATCHER] Flushed %d messages in %v\n", len(b.buffer), duration)
+	fmt.Printf("[BATCHER] Flushed %d messages in %v\n", len(batch.buffer), duration)
 
-	// reset slice but keep capacity
-	b.buffer = b.buffer[:0]
+	// Clear buffer but keep capacity
+	batch.buffer = batch.buffer[:0]
 	return nil
+}
+
+func (tb *TopicBatcher) createTopicBatch(topic string) *TopicBatch {
+	logFile := filepath.Join(tb.baseDir, topic+".log")
+	idxFile := filepath.Join(tb.baseDir, topic+".idx")
+
+	// Load existing index or create new one
+	index, err := storage.LoadIndex(idxFile)
+	if err != nil {
+		fmt.Printf("[BATCHER] Warning: failed to load index for topic %s: %v\n", topic, err)
+		index = &storage.OffsetIndex{Positions: []int64{}}
+	}
+
+	return &TopicBatch{
+		buffer:  make([]message.Message, 0, tb.maxSize),
+		index:   index,
+		logFile: logFile,
+		idxFile: idxFile,
+	}
+}
+
+func (tb *TopicBatcher) AddMessage(msg message.Message) error {
+	tb.mtx.Lock()
+	batch, exists := tb.batches[msg.Topic]
+	if !exists {
+		batch = tb.createTopicBatch(msg.Topic)
+		tb.batches[msg.Topic] = batch
+	}
+	tb.mtx.Unlock()
+	batch.mtx.Lock()
+	defer batch.mtx.Unlock()
+
+	batch.buffer = append(batch.buffer, msg)
+
+	// Check if we need to flush this topic
+	if len(batch.buffer) >= int(tb.maxSize) {
+		return tb.flushTopic(batch)
+	}
+	return nil
+}
+
+func (tb *TopicBatcher) Stop() {
+	close(tb.quit)
+}
+
+func (tb *TopicBatcher) GetTopicStats(topic string) (int, int64, error) {
+	tb.mtx.RLock()
+	batch, exists := tb.batches[topic]
+	tb.mtx.RUnlock()
+
+	if !exists {
+		return 0, 0, fmt.Errorf("topic %s not found", topic)
+	}
+
+	batch.mtx.Lock()
+	defer batch.mtx.Unlock()
+
+	bufferedCount := len(batch.buffer)
+	totalMessages := int64(len(batch.index.Positions))
+
+	return bufferedCount, totalMessages, nil
 }

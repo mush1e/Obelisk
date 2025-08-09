@@ -1,8 +1,5 @@
 package server
 
-// This package provides a server implementation for the Obelisk application.
-// It includes the Server struct and its associated methods for managing the server's state and behavior.
-
 import (
 	"bufio"
 	"fmt"
@@ -25,7 +22,7 @@ type Server struct {
 
 	// storage stuff
 	topicBuffers *buffer.TopicBuffers
-	batcher      *batch.Batcher
+	batcher      *batch.TopicBatcher
 }
 
 // NewServer creates a new Server instance
@@ -33,8 +30,8 @@ func NewServer(address, logFilePath string) *Server {
 	return &Server{
 		address:      address,
 		quit:         make(chan struct{}),
-		topicBuffers: buffer.NewTopicBuffers(10),
-		batcher:      batch.NewBatcher(logFilePath, 100, time.Second*5),
+		topicBuffers: buffer.NewTopicBuffers(100), // Increased buffer size
+		batcher:      batch.NewTopicBatcher(logFilePath, 100, time.Second*5),
 	}
 }
 
@@ -48,9 +45,13 @@ func (s *Server) Start() error {
 
 	fmt.Println("Server started on", s.address)
 
+	// Start the batcher
+	if err := s.batcher.Start(); err != nil {
+		return fmt.Errorf("failed to start batcher: %w", err)
+	}
+
 	s.wg.Add(1)
 	go s.acceptLoop()
-	s.batcher.Start()
 	return nil
 }
 
@@ -106,9 +107,16 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 
-			fmt.Printf("Received message - Key: %s, Value: %s\n", msg.Key, msg.Value)
-			s.topicBuffers.Push(msg)  // For fast reads
-			s.batcher.AddMessage(msg) // For batched storage
+			fmt.Printf("Received message - Topic: %s, Key: %s, Value: %s\n", msg.Topic, msg.Key, msg.Value)
+
+			// Store in memory buffer for fast reads
+			s.topicBuffers.Push(msg)
+
+			// Add to batcher for persistent storage with indexing
+			if err := s.batcher.AddMessage(msg); err != nil {
+				fmt.Printf("Error adding message to batcher: %v\n", err)
+			}
+
 			// Send simple response back
 			response := []byte("OK\n")
 			conn.Write(response)
@@ -125,8 +133,14 @@ func (s *Server) Stop() error {
 			return fmt.Errorf("failed to close listener: %w", err)
 		}
 	}
+
 	s.batcher.Stop()
 	s.wg.Wait()
 	fmt.Println("Server stopped")
 	return nil
+}
+
+// GetTopicStats returns statistics for a specific topic
+func (s *Server) GetTopicStats(topic string) (buffered int, persisted int64, err error) {
+	return s.batcher.GetTopicStats(topic)
 }
