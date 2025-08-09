@@ -79,10 +79,11 @@ func Deserialize(data []byte) (Message, error) {
 	if err := binary.Read(buf, binary.LittleEndian, &TopicLen); err != nil {
 		return msg, err
 	}
-	TopicBytes := make([]byte, TopicLen)
-	if err := binary.Read(buf, binary.LittleEndian, &TopicBytes); err != nil {
+	topicBytes := make([]byte, TopicLen)
+	if err := binary.Read(buf, binary.LittleEndian, &topicBytes); err != nil {
 		return msg, err
 	}
+	msg.Topic = string(topicBytes)
 
 	// Read Key
 	var keyLen uint32
