@@ -13,7 +13,7 @@ func main() {
 	gracefulShutdown := make(chan os.Signal, 1)
 	signal.Notify(gracefulShutdown, syscall.SIGINT, syscall.SIGTERM)
 
-	logFilePath := "data/segments/test.log"
+	logFilePath := "data/topics/"
 
 	srv := server.NewServer(":8080", logFilePath)
 	if err := srv.Start(); err != nil {

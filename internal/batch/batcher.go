@@ -91,7 +91,9 @@ func (b *Batcher) flush() error {
 	start := time.Now()
 
 	for _, msg := range b.buffer {
-		if err := storage.AppendMessage(b.logFile, msg); err != nil {
+		topic := msg.Topic
+		logPath := b.logFile + topic + ".log"
+		if err := storage.AppendMessage(logPath, msg); err != nil {
 			return err
 		}
 	}
