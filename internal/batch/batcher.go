@@ -1,6 +1,7 @@
 package batch
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -82,11 +83,22 @@ func (b *Batcher) Stop() {
 
 // flush flushes the buffer to the log file.
 func (b *Batcher) flush() error {
+	if len(b.buffer) == 0 {
+		return nil // Nothing to flush
+	}
+
+	fmt.Printf("[BATCHER] Flushing %d messages to disk...\n", len(b.buffer))
+	start := time.Now()
+
 	for _, msg := range b.buffer {
 		if err := storage.AppendMessage(b.logFile, msg); err != nil {
 			return err
 		}
 	}
+
+	duration := time.Since(start)
+	fmt.Printf("[BATCHER] Flushed %d messages in %v\n", len(b.buffer), duration)
+
 	// reset slice but keep capacity
 	b.buffer = b.buffer[:0]
 	return nil
