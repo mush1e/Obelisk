@@ -43,7 +43,7 @@ func (tb *TopicBuffers) Push(msg message.Message) {
 }
 
 // GetRecent gets all recent messages in the buffer for the specified topic, in order.
-func (tb *TopicBuffers) GetRecent(topic string) []message.Message {
+func (tb *TopicBuffers) GetRecentByTopic(topic string) []message.Message {
 	tb.mtx.RLock()
 	defer tb.mtx.RUnlock()
 	if buf, exists := tb.buffers[topic]; exists {

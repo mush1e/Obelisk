@@ -28,7 +28,6 @@ func Serialize(msg Message) ([]byte, error) {
 	if err := binary.Write(&buf, binary.LittleEndian, msg.Timestamp.UnixNano()); err != nil {
 		return nil, err
 	}
-
 	// Topic
 	topicBytes := []byte(msg.Topic)
 	topicLen := uint32(len(topicBytes))
