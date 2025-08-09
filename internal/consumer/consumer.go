@@ -29,6 +29,7 @@ func NewConsumer(topics ...string) *Consumer {
 // Reads through topic logs to get latest messages starting at offset
 func (c *Consumer) Poll(topic string) ([]message.Message, error) {
 	// Get messages starting from current offset
+
 	return nil, nil
 }
 
