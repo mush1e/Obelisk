@@ -18,7 +18,6 @@ import (
 	"bufio"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -253,11 +252,7 @@ func AppendMessage(logFile, idxFile string, msg message.Message, idx *OffsetInde
 
 	// Append message with protocol framing
 	pos, err := f.AppendWith(func(w io.Writer) error {
-		bw, ok := w.(*bufio.Writer)
-		if !ok {
-			return fmt.Errorf("expected *bufio.Writer, got %T", w)
-		}
-		return protocol.WriteMessage(bw, msgBin)
+		return protocol.WriteMessage(w, msgBin)
 	})
 	if err != nil {
 		return err
@@ -311,12 +306,7 @@ func AppendMessages(logFile, idxFile string, msgs []message.Message, idx *Offset
 
 	// Protocol framing adapter for the file pool's batch append method
 	writeProto := func(w io.Writer, mb []byte) error {
-		// Write framed message using protocol to the provided writer
-		bw, ok := w.(*bufio.Writer)
-		if !ok {
-			return fmt.Errorf("expected *bufio.Writer, got %T", w)
-		}
-		return protocol.WriteMessage(bw, mb)
+		return protocol.WriteMessage(w, mb)
 	}
 
 	// Perform batch write to log file
@@ -362,11 +352,7 @@ func AppendMessageSimple(logFile string, msg message.Message) error {
 		if serr != nil {
 			return serr
 		}
-		bw, ok := w.(*bufio.Writer)
-		if !ok {
-			return fmt.Errorf("expected *bufio.Writer, got %T", w)
-		}
-		return protocol.WriteMessage(bw, b)
+		return protocol.WriteMessage(w, b)
 	})
 	return err
 }

@@ -41,7 +41,7 @@ func ReadMessage(r *bufio.Reader) ([]byte, error) {
 }
 
 // WriteMessage writes a message to the given writer.
-func WriteMessage(w *bufio.Writer, serializedMessage []byte) error {
+func WriteMessage(w io.Writer, serializedMessage []byte) error {
 	var sizeBuf [4]byte
 	binary.LittleEndian.PutUint32(sizeBuf[:], uint32(len(serializedMessage)))
 
@@ -51,5 +51,10 @@ func WriteMessage(w *bufio.Writer, serializedMessage []byte) error {
 	if _, err := w.Write(serializedMessage); err != nil {
 		return fmt.Errorf("error writing message body: %w", err)
 	}
-	return w.Flush()
+
+	// Only flush if it's a buffered writer
+	if bw, ok := w.(*bufio.Writer); ok {
+		return bw.Flush()
+	}
+	return nil
 }
