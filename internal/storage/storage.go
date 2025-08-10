@@ -7,8 +7,6 @@ package storage
 
 import (
 	"bufio"
-	"bytes"
-	"fmt"
 	"io"
 	"os"
 	"time"
@@ -67,27 +65,11 @@ func AppendMessage(logFile, idxFile string, msg message.Message, idx *OffsetInde
 	}
 
 	// Serialize message to bytes with protocol format in a buffer
-	buf := &bytes.Buffer{}
-	w := bufio.NewWriter(buf)
+	w := bufio.NewWriter(file)
 	if err := protocol.WriteMessage(w, msgBin); err != nil {
 		return err
 	}
-	if err := w.Flush(); err != nil {
-		return err
-	}
-	data := buf.Bytes()
-
-	// Write data using pool's WriteAndMarkDirty so dirty flag is set
-	n, err := pool.WriteAndMarkDirty(logFile, data)
-	if err != nil {
-		return err
-	}
-	if n != len(data) {
-		return fmt.Errorf("partial write: wrote %d bytes, expected %d", n, len(data))
-	}
-
-	// Flush the file to ensure data is synced to disk
-	if err := pool.Flush(logFile); err != nil {
+	if err := w.Flush(); err != nil { // Flush buffer, not file!
 		return err
 	}
 
