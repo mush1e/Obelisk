@@ -41,6 +41,7 @@ func NewFilePool(timeLimit time.Duration) *FilePool {
 	return &FilePool{
 		files:     make(map[string]*File),
 		timeLimit: timeLimit,
+		quit:      make(chan struct{}),
 	}
 }
 
@@ -157,5 +158,68 @@ func (fp *FilePool) Close(path string) error {
 
 	// Remove from pool
 	delete(fp.files, path)
+	return nil
+}
+
+// Stop signals cleanup to stop and closes all files
+func (fp *FilePool) Stop() error {
+	close(fp.quit)
+	return fp.closeAll()
+}
+
+// closeAll closes all open files (called during shutdown)
+func (fp *FilePool) closeAll() error {
+	fp.mtx.Lock()
+	defer fp.mtx.Unlock()
+
+	var firstErr error
+	for path, file := range fp.files {
+		if err := file.file.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(fp.files, path)
+	}
+	return firstErr
+}
+
+// WriteAndMarkDirty writes data and marks file as dirty
+func (fp *FilePool) WriteAndMarkDirty(path string, data []byte) (int, error) {
+	fp.mtx.RLock()
+	file, exists := fp.files[path]
+	fp.mtx.RUnlock()
+
+	if !exists {
+		return 0, errors.New("file not in pool")
+	}
+
+	n, err := file.file.Write(data)
+	if err == nil {
+		fp.mtx.Lock()
+		file.isDirty = true
+		fp.mtx.Unlock()
+	}
+	return n, err
+}
+
+// Flush syncs a file to disk and marks it as clean
+func (fp *FilePool) Flush(path string) error {
+	fp.mtx.RLock()
+	file, exists := fp.files[path]
+	fp.mtx.RUnlock()
+
+	if !exists {
+		return errors.New("file not in pool")
+	}
+
+	// Sync to disk
+	if err := file.file.Sync(); err != nil {
+		return err
+	}
+
+	// Mark as clean (not dirty)
+	fp.mtx.Lock()
+	file.isDirty = false
+	fp.mtx.Unlock()
+
 	return nil
 }

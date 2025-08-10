@@ -7,12 +7,42 @@ package storage
 
 import (
 	"bufio"
+	"bytes"
+	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/pkg/protocol"
 )
+
+// Global file pool for the storage package
+var pool *FilePool
+
+// InitializePool sets up the file pool with specified settings
+func InitializePool(idleTimeout time.Duration, cleanupInterval time.Duration) {
+	pool = NewFilePool(idleTimeout)
+	pool.StartCleanup(cleanupInterval)
+}
+
+// ShutdownPool gracefully closes all files and stops the cleanup routine
+func ShutdownPool() error {
+	if pool != nil {
+		return pool.Stop()
+	}
+	return nil
+}
+
+// GetPool returns the current file pool (useful for testing or stats)
+func GetPool() *FilePool {
+	return pool
+}
+
+// Initialize with defaults when package loads
+func init() {
+	InitializePool(5*time.Minute, 30*time.Second)
+}
 
 // AppendMessage appends a serialized message to the log file and updates the index.
 // This is the primary interface that should be used by all components for persistent storage.
@@ -24,29 +54,44 @@ func AppendMessage(logFile, idxFile string, msg message.Message, idx *OffsetInde
 		return err
 	}
 
-	// Open log file for appending
-	file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// Get or create file handle from the pool
+	file, err := pool.GetOrCreate(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
-	// Get current byte position before writing (for indexing)
+	// Get current file offset (end) to use in index
 	pos, err := file.Seek(0, io.SeekEnd)
 	if err != nil {
 		return err
 	}
 
-	// Write message using the protocol format
-	w := bufio.NewWriter(file)
+	// Serialize message to bytes with protocol format in a buffer
+	buf := &bytes.Buffer{}
+	w := bufio.NewWriter(buf)
 	if err := protocol.WriteMessage(w, msgBin); err != nil {
 		return err
 	}
 	if err := w.Flush(); err != nil {
 		return err
 	}
+	data := buf.Bytes()
 
-	// Update index with the byte position where this message starts
+	// Write data using pool's WriteAndMarkDirty so dirty flag is set
+	n, err := pool.WriteAndMarkDirty(logFile, data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return fmt.Errorf("partial write: wrote %d bytes, expected %d", n, len(data))
+	}
+
+	// Flush the file to ensure data is synced to disk
+	if err := pool.Flush(logFile); err != nil {
+		return err
+	}
+
+	// Update index with the byte position of the message
 	return idx.AppendIndex(idxFile, pos)
 }
 

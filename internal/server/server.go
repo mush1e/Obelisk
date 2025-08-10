@@ -10,6 +10,7 @@ import (
 	"github.com/mush1e/obelisk/internal/batch"
 	"github.com/mush1e/obelisk/internal/buffer"
 	"github.com/mush1e/obelisk/internal/message"
+	"github.com/mush1e/obelisk/internal/storage"
 	"github.com/mush1e/obelisk/pkg/protocol"
 )
 
@@ -135,6 +136,7 @@ func (s *Server) Stop() error {
 	}
 
 	s.batcher.Stop()
+	storage.ShutdownPool()
 	s.wg.Wait()
 	fmt.Println("Server stopped")
 	return nil
