@@ -160,7 +160,7 @@ func ReadMessagesFromOffset(logFile, idxFile string, offset uint64) ([]message.M
 	}
 	defer file.Close()
 
-	if _, err := file.Seek(pos, os.SEEK_SET); err != nil {
+	if _, err := file.Seek(pos, io.SeekStart); err != nil {
 		return nil, err
 	}
 
