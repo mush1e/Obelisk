@@ -1,30 +1,26 @@
 package storage
 
-// This package provides persistent storage functionality for Obelisk messages.
-// It handles writing messages to log files with indexing support for efficient
-// random access and reading. The storage format uses a binary protocol with
-// separate log and index files for each topic.
-
 import (
 	"bufio"
+	"encoding/binary"
+	"errors"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/pkg/protocol"
 )
 
-// Global file pool for the storage package
+// Global pool variable (initialized by caller via InitializePool)
 var pool *FilePool
 
-// InitializePool sets up the file pool with specified settings
 func InitializePool(idleTimeout time.Duration, cleanupInterval time.Duration) {
 	pool = NewFilePool(idleTimeout)
 	pool.StartCleanup(cleanupInterval)
 }
 
-// ShutdownPool gracefully closes all files and stops the cleanup routine
 func ShutdownPool() error {
 	if pool != nil {
 		return pool.Stop()
@@ -32,163 +28,242 @@ func ShutdownPool() error {
 	return nil
 }
 
-// GetPool returns the current file pool (useful for testing or stats)
-func GetPool() *FilePool {
-	return pool
+func GetPool() *FilePool { return pool }
+
+// OffsetIndex maps logical offsets (0..N-1) to byte positions in the log file.
+// The on-disk format is a sequence of little-endian int64 positions.
+type OffsetIndex struct {
+	Positions []int64
+	mtx       sync.RWMutex
 }
 
-// Initialize with defaults when package loads
-func init() {
-	InitializePool(5*time.Minute, 30*time.Second)
+// LoadIndex loads the index from disk. If the file doesn't exist it returns an empty index.
+func LoadIndex(path string) (*OffsetIndex, error) {
+	idx := &OffsetIndex{Positions: []int64{}}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return idx, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	var pos int64
+	for {
+		if err := binary.Read(f, binary.LittleEndian, &pos); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		idx.Positions = append(idx.Positions, pos)
+	}
+	return idx, nil
 }
 
-// AppendMessage appends a serialized message to the log file and updates the index.
-// This is the primary interface that should be used by all components for persistent storage.
-// It ensures atomic writes by recording the byte position before writing and updating the index.
+// AppendIndex appends a single position to the index file and in-memory structure.
+func (idx *OffsetIndex) AppendIndex(path string, pos int64) error {
+	idx.mtx.Lock()
+	defer idx.mtx.Unlock()
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := binary.Write(f, binary.LittleEndian, pos); err != nil {
+		return err
+	}
+	idx.Positions = append(idx.Positions, pos)
+	return nil
+}
+
+// AppendIndices appends many positions atomically to the index file (writes all then updates memory).
+func (idx *OffsetIndex) AppendIndices(path string, poses []int64) error {
+	idx.mtx.Lock()
+	defer idx.mtx.Unlock()
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	for _, p := range poses {
+		if err := binary.Write(f, binary.LittleEndian, p); err != nil {
+			return err
+		}
+	}
+	idx.Positions = append(idx.Positions, poses...)
+	return nil
+}
+
+func (idx *OffsetIndex) GetPosition(offset uint64) (int64, error) {
+	idx.mtx.RLock()
+	defer idx.mtx.RUnlock()
+
+	if int(offset) >= len(idx.Positions) {
+		return 0, io.EOF
+	}
+	return idx.Positions[offset], nil
+}
+
+// AppendMessage appends a single message atomically and updates index.
 func AppendMessage(logFile, idxFile string, msg message.Message, idx *OffsetIndex) error {
-	// Serialize the message to binary format
+	if pool == nil {
+		return errors.New("file pool not initialized")
+	}
+
 	msgBin, err := message.Serialize(msg)
 	if err != nil {
 		return err
 	}
 
-	// Get or create file handle from the pool
-	file, err := pool.GetOrCreate(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
+	f, err := pool.GetOrCreate(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 	if err != nil {
 		return err
 	}
 
-	// Get current file offset (end) to use in index
-	pos, err := file.Seek(0, io.SeekEnd)
+	pos, err := f.AppendWith(func(w io.Writer) error {
+		return protocol.WriteMessage(w.(*bufio.Writer), msgBin)
+	})
 	if err != nil {
 		return err
 	}
 
-	// Serialize message to bytes with protocol format in a buffer
-	w := bufio.NewWriter(file)
-	if err := protocol.WriteMessage(w, msgBin); err != nil {
-		return err
-	}
-	if err := w.Flush(); err != nil { // Flush buffer, not file!
-		return err
-	}
-
-	// Update index with the byte position of the message
 	return idx.AppendIndex(idxFile, pos)
 }
 
-// AppendMessageSimple provides backward compatibility for components that don't need indexing.
-// This should be deprecated in favor of the indexed version (AppendMessage).
-// It writes messages without maintaining an index, making random access impossible.
-func AppendMessageSimple(logFile string, msg message.Message) error {
-	// Serialize message to binary format
-	msgBin, err := message.Serialize(msg)
+// AppendMessages - batch append many messages with index update in one shot.
+func AppendMessages(logFile, idxFile string, msgs []message.Message, idx *OffsetIndex) error {
+	if pool == nil {
+		return errors.New("file pool not initialized")
+	}
+
+	f, err := pool.GetOrCreate(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 	if err != nil {
 		return err
 	}
 
-	// Open log file for appending
-	file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	bins := make([][]byte, 0, len(msgs))
+	for _, m := range msgs {
+		b, err := message.Serialize(m)
+		if err != nil {
+			return err
+		}
+		bins = append(bins, b)
+	}
+
+	// adaptor for writeProto
+	writeProto := func(w io.Writer, mb []byte) error {
+		// write framed message using protocol to the provided writer
+		return protocol.WriteMessage(w.(*bufio.Writer), mb)
+	}
+
+	_, positions, err := f.AppendBatch(bins, writeProto)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
-	// Write message using protocol format (no indexing)
-	w := bufio.NewWriter(file)
-	if err := protocol.WriteMessage(w, msgBin); err != nil {
-		return err
-	}
-	return w.Flush()
+	return idx.AppendIndices(idxFile, positions)
 }
 
-// ReadAllMessages reads all messages from the log file sequentially from beginning to end.
-// This is useful for consumers that want to read the entire topic history.
+// AppendMessageSimple: compatibility method (no indexing). Uses pool to get file
+func AppendMessageSimple(logFile string, msg message.Message) error {
+	if pool == nil {
+		return errors.New("file pool not initialized")
+	}
+	f, err := pool.GetOrCreate(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
+	if err != nil {
+		return err
+	}
+
+	_, err = f.AppendWith(func(w io.Writer) error {
+		b, serr := message.Serialize(msg)
+		if serr != nil {
+			return serr
+		}
+		return protocol.WriteMessage(w.(*bufio.Writer), b)
+	})
+	return err
+}
+
+// ReadAllMessages reads the whole log sequentially
 func ReadAllMessages(logFile string) ([]message.Message, error) {
 	var messages []message.Message
-
-	// Open log file for reading
-	file, err := os.Open(logFile)
+	f, err := os.Open(logFile)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer f.Close()
 
-	// Read messages sequentially until EOF
-	r := bufio.NewReader(file)
+	r := bufio.NewReader(f)
 	for {
 		msgBytes, err := protocol.ReadMessage(r)
 		if err != nil {
-			break // EOF reached
+			if err == io.EOF {
+				break
+			}
+			return nil, err
 		}
-
-		// Deserialize binary message back to struct
-		msg, err := message.Deserialize(msgBytes)
+		m, err := message.Deserialize(msgBytes)
 		if err != nil {
 			return nil, err
 		}
-		messages = append(messages, msg)
+		messages = append(messages, m)
 	}
 	return messages, nil
 }
 
-// ReadMessagesFromOffset reads messages starting from a logical offset using the index.
-// This enables efficient random access by seeking to the byte position in the log file
-// that corresponds to the given message offset.
+// ReadMessagesFromOffset reads messages starting from logical offset using index
 func ReadMessagesFromOffset(logFile, idxFile string, offset uint64) ([]message.Message, error) {
-	// Load the index to map offsets to byte positions
 	idx, err := LoadIndex(idxFile)
 	if err != nil {
 		return nil, err
 	}
 
-	// Return empty slice if offset is beyond available messages
 	if int(offset) >= len(idx.Positions) {
 		return []message.Message{}, nil
 	}
 
-	// Get the byte position for the requested offset
 	pos, err := idx.GetPosition(offset)
 	if err != nil {
 		return nil, err
 	}
 
-	// Open log file and seek to the calculated position
-	file, err := os.Open(logFile)
+	f, err := os.Open(logFile)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer f.Close()
 
-	if _, err := file.Seek(pos, io.SeekStart); err != nil {
+	if _, err := f.Seek(pos, io.SeekStart); err != nil {
 		return nil, err
 	}
 
-	// Read all messages from the offset position to EOF
-	r := bufio.NewReader(file)
+	r := bufio.NewReader(f)
 	var messages []message.Message
-
 	for {
 		msgBytes, err := protocol.ReadMessage(r)
 		if err != nil {
-			break // EOF reached
+			if err == io.EOF {
+				break
+			}
+			return nil, err
 		}
-
-		// Deserialize each message
-		msg, err := message.Deserialize(msgBytes)
+		m, err := message.Deserialize(msgBytes)
 		if err != nil {
 			return nil, err
 		}
-		messages = append(messages, msg)
+		messages = append(messages, m)
 	}
-
 	return messages, nil
 }
 
-// GetTopicMessageCount returns the total number of messages stored for a topic.
-// It uses the index file to determine the count without reading the entire log file.
+// GetTopicMessageCount
 func GetTopicMessageCount(idxFile string) (int64, error) {
-	// Load index and return the number of indexed positions
 	idx, err := LoadIndex(idxFile)
 	if err != nil {
 		return 0, err

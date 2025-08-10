@@ -1,10 +1,5 @@
 package batch
 
-// This package provides batching functionality for Obelisk messages.
-// It groups messages by topic and periodically flushes them to persistent storage
-// for efficient disk I/O operations. The batcher ensures messages are not lost
-// by maintaining in-memory buffers and flushing based on size or time thresholds.
-
 import (
 	"errors"
 	"fmt"
@@ -17,31 +12,26 @@ import (
 	"github.com/mush1e/obelisk/internal/storage"
 )
 
-// TopicBatcher manages batching and persistence of messages across multiple topics.
-// It maintains separate batches for each topic and flushes them to disk based on
-// configurable size and time thresholds.
+// TopicBatcher manages batching per topic and flushes them to disk.
 type TopicBatcher struct {
-	batches map[string]*TopicBatch // Map of topic name to its batch
-	baseDir string                 // Base directory for storing topic files
-	maxSize uint32                 // Maximum number of messages before flush
-	maxWait time.Duration          // Maximum time to wait before flush
-	quit    chan struct{}          // Channel to signal shutdown
-	mtx     sync.RWMutex           // Protects batches map
+	batches map[string]*TopicBatch
+	baseDir string
+	maxSize uint32
+	maxWait time.Duration
+	quit    chan struct{}
+	mtx     sync.RWMutex
+	wg      sync.WaitGroup
 }
 
-// TopicBatch represents a batch of messages for a specific topic.
-// It contains an in-memory buffer and references to the topic's log and index files.
+// TopicBatch holds in-memory buffered messages and storage metadata
 type TopicBatch struct {
-	buffer  []message.Message    // In-memory buffer for pending messages
-	index   *storage.OffsetIndex // Index mapping offsets to byte positions
-	logFile string               // Path to the topic's log file
-	idxFile string               // Path to the topic's index file
-	mtx     sync.RWMutex         // Protects buffer operations
+	buffer  []message.Message
+	index   *storage.OffsetIndex
+	logFile string
+	idxFile string
+	mtx     sync.Mutex
 }
 
-// NewTopicBatcher creates a new TopicBatcher with the specified configuration.
-// maxSize determines how many messages to batch before flushing to disk.
-// maxWait determines the maximum time to wait before flushing incomplete batches.
 func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration) *TopicBatcher {
 	return &TopicBatcher{
 		batches: make(map[string]*TopicBatch),
@@ -52,23 +42,22 @@ func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration) *Top
 	}
 }
 
-// Start initializes the batcher by creating the base directory and starting
-// the background flush ticker that periodically flushes pending batches.
 func (tb *TopicBatcher) Start() error {
 	if err := os.MkdirAll(tb.baseDir, 0755); err != nil {
 		return errors.New("failed to create base directory " + err.Error())
 	}
 
-	// Start background ticker to flush batches periodically
+	tb.wg.Add(1)
 	ticker := time.NewTicker(tb.maxWait)
 	go func() {
 		defer ticker.Stop()
+		defer tb.wg.Done()
 		for {
 			select {
 			case <-ticker.C:
-				tb.FlushAll() // Flush all topics on timer
+				tb.FlushAll()
 			case <-tb.quit:
-				tb.FlushAll() // Final flush on shutdown
+				tb.FlushAll()
 				return
 			}
 		}
@@ -76,75 +65,32 @@ func (tb *TopicBatcher) Start() error {
 	return nil
 }
 
-// FlushAll flushes all topic batches that have pending messages to disk.
-// This is called periodically by the background ticker and during shutdown.
-func (tb *TopicBatcher) FlushAll() {
-	tb.mtx.RLock()
-	defer tb.mtx.RUnlock()
-
-	for topic, batch := range tb.batches {
-		if len(batch.buffer) == 0 {
-			continue // Skip empty batches
-		}
-		if err := tb.flushTopic(tb.batches[topic]); err != nil {
-			fmt.Printf("[BATCHER] error flushing topic %s: %v\n", topic, err)
-		}
-	}
+// Stop signals shutdown and waits for background goroutines to finish
+func (tb *TopicBatcher) Stop() {
+	close(tb.quit)
+	tb.wg.Wait()
 }
 
-// flushTopic writes all buffered messages for a topic to persistent storage.
-// It appends messages to the log file and updates the index for fast lookups.
-func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
-	if len(batch.buffer) == 0 {
-		return nil
-	}
-
-	batch.mtx.Lock()
-	defer batch.mtx.Unlock()
-
-	fmt.Printf("[BATCHER] Flushing %d messages for topic to disk...\n", len(batch.buffer))
-	start := time.Now()
-
-	// Write all buffered messages to disk with indexing
-	for _, msg := range batch.buffer {
-		if err := storage.AppendMessage(batch.logFile, batch.idxFile, msg, batch.index); err != nil {
-			return fmt.Errorf("failed to append message: %w", err)
-		}
-	}
-
-	duration := time.Since(start)
-	fmt.Printf("[BATCHER] Flushed %d messages in %v\n", len(batch.buffer), duration)
-
-	// Clear buffer but preserve capacity for reuse
-	batch.buffer = batch.buffer[:0]
-	return nil
-}
-
-// createTopicBatch initializes a new TopicBatch for the given topic.
-// It creates the necessary file paths and loads any existing index.
+// createTopicBatch creates or loads a TopicBatch for a topic
 func (tb *TopicBatcher) createTopicBatch(topic string) *TopicBatch {
 	logFile := filepath.Join(tb.baseDir, topic+".log")
 	idxFile := filepath.Join(tb.baseDir, topic+".idx")
-
-	// Load existing index from disk or create new empty index
 	index, err := storage.LoadIndex(idxFile)
 	if err != nil {
 		fmt.Printf("[BATCHER] Warning: failed to load index for topic %s: %v\n", topic, err)
 		index = &storage.OffsetIndex{Positions: []int64{}}
 	}
-
 	return &TopicBatch{
-		buffer:  make([]message.Message, 0, tb.maxSize), // Pre-allocate with capacity
+		buffer:  make([]message.Message, 0, tb.maxSize),
 		index:   index,
 		logFile: logFile,
 		idxFile: idxFile,
 	}
 }
 
-// AddMessage adds a message to the appropriate topic batch.
-// If the batch doesn't exist, it creates one. If the batch reaches maxSize,
-// it immediately flushes the batch to disk.
+// AddMessage adds a message to its topic batch. If full, triggers flush.
 func (tb *TopicBatcher) AddMessage(msg message.Message) error {
+	// fast path: acquire or create batch
 	tb.mtx.Lock()
 	batch, exists := tb.batches[msg.Topic]
 	if !exists {
@@ -154,38 +100,72 @@ func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 	tb.mtx.Unlock()
 
 	batch.mtx.Lock()
-	defer batch.mtx.Unlock()
-
 	batch.buffer = append(batch.buffer, msg)
+	bufLen := len(batch.buffer)
+	batch.mtx.Unlock()
 
-	// Flush immediately if batch is full
-	if len(batch.buffer) >= int(tb.maxSize) {
+	if bufLen >= int(tb.maxSize) {
 		return tb.flushTopic(batch)
 	}
 	return nil
 }
 
-// Stop signals the batcher to stop and performs a final flush of all batches.
-func (tb *TopicBatcher) Stop() {
-	close(tb.quit)
+// FlushAll snapshots batches that need flushing and flushes them without holding the global lock
+func (tb *TopicBatcher) FlushAll() {
+	// snapshot
+	tb.mtx.RLock()
+	snap := make([]*TopicBatch, 0, len(tb.batches))
+	for _, b := range tb.batches {
+		b.mtx.Lock()
+		if len(b.buffer) > 0 {
+			snap = append(snap, b)
+		}
+		b.mtx.Unlock()
+	}
+	tb.mtx.RUnlock()
+
+	for _, b := range snap {
+		if err := tb.flushTopic(b); err != nil {
+			fmt.Printf("[BATCHER] error flushing topic %s: %v\n", b.logFile, err)
+		}
+	}
 }
 
-// GetTopicStats returns statistics for a specific topic including buffered
-// message count and total persisted message count.
+// flushTopic steals buffer and writes to storage. On failure re-queues messages.
+func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
+	// steal the buffer
+	batch.mtx.Lock()
+	if len(batch.buffer) == 0 {
+		batch.mtx.Unlock()
+		return nil
+	}
+	local := make([]message.Message, len(batch.buffer))
+	copy(local, batch.buffer)
+	batch.buffer = batch.buffer[:0]
+	batch.mtx.Unlock()
+
+	// attempt write
+	if err := storage.AppendMessages(batch.logFile, batch.idxFile, local, batch.index); err != nil {
+		// requeue at front preserving order
+		batch.mtx.Lock()
+		batch.buffer = append(local, batch.buffer...)
+		batch.mtx.Unlock()
+		return err
+	}
+	return nil
+}
+
+// GetTopicStats returns buffered and persisted counts
 func (tb *TopicBatcher) GetTopicStats(topic string) (int, int64, error) {
 	tb.mtx.RLock()
 	batch, exists := tb.batches[topic]
 	tb.mtx.RUnlock()
-
 	if !exists {
 		return 0, 0, fmt.Errorf("topic %s not found", topic)
 	}
-
 	batch.mtx.Lock()
-	defer batch.mtx.Unlock()
-
-	bufferedCount := len(batch.buffer)                 // Messages waiting to be flushed
-	totalMessages := int64(len(batch.index.Positions)) // Messages already persisted
-
-	return bufferedCount, totalMessages, nil
+	buffered := len(batch.buffer)
+	total := int64(len(batch.index.Positions))
+	batch.mtx.Unlock()
+	return buffered, total, nil
 }
