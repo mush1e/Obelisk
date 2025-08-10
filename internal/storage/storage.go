@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -63,6 +64,7 @@ func LoadIndex(path string) (*OffsetIndex, error) {
 }
 
 // AppendIndex appends a single position to the index file and in-memory structure.
+// TODO: Consider using file pool for index files to avoid repeated open/close operations
 func (idx *OffsetIndex) AppendIndex(path string, pos int64) error {
 	idx.mtx.Lock()
 	defer idx.mtx.Unlock()
@@ -81,6 +83,7 @@ func (idx *OffsetIndex) AppendIndex(path string, pos int64) error {
 }
 
 // AppendIndices appends many positions atomically to the index file (writes all then updates memory).
+// TODO: Consider using file pool for index files to avoid repeated open/close operations
 func (idx *OffsetIndex) AppendIndices(path string, poses []int64) error {
 	idx.mtx.Lock()
 	defer idx.mtx.Unlock()
@@ -127,7 +130,11 @@ func AppendMessage(logFile, idxFile string, msg message.Message, idx *OffsetInde
 	}
 
 	pos, err := f.AppendWith(func(w io.Writer) error {
-		return protocol.WriteMessage(w.(*bufio.Writer), msgBin)
+		bw, ok := w.(*bufio.Writer)
+		if !ok {
+			return fmt.Errorf("expected *bufio.Writer, got %T", w)
+		}
+		return protocol.WriteMessage(bw, msgBin)
 	})
 	if err != nil {
 		return err
@@ -159,7 +166,11 @@ func AppendMessages(logFile, idxFile string, msgs []message.Message, idx *Offset
 	// adaptor for writeProto
 	writeProto := func(w io.Writer, mb []byte) error {
 		// write framed message using protocol to the provided writer
-		return protocol.WriteMessage(w.(*bufio.Writer), mb)
+		bw, ok := w.(*bufio.Writer)
+		if !ok {
+			return fmt.Errorf("expected *bufio.Writer, got %T", w)
+		}
+		return protocol.WriteMessage(bw, mb)
 	}
 
 	_, positions, err := f.AppendBatch(bins, writeProto)
@@ -185,7 +196,11 @@ func AppendMessageSimple(logFile string, msg message.Message) error {
 		if serr != nil {
 			return serr
 		}
-		return protocol.WriteMessage(w.(*bufio.Writer), b)
+		bw, ok := w.(*bufio.Writer)
+		if !ok {
+			return fmt.Errorf("expected *bufio.Writer, got %T", w)
+		}
+		return protocol.WriteMessage(bw, b)
 	})
 	return err
 }

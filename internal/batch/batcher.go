@@ -13,6 +13,8 @@ import (
 )
 
 // TopicBatcher manages batching per topic and flushes them to disk.
+// TODO: use sync.Map instead of map+mutex for better read performance
+// on read-heavy workloads with many concurrent topic accesses.
 type TopicBatcher struct {
 	batches map[string]*TopicBatch
 	baseDir string
@@ -102,9 +104,10 @@ func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 	batch.mtx.Lock()
 	batch.buffer = append(batch.buffer, msg)
 	bufLen := len(batch.buffer)
+	shouldFlush := bufLen >= int(tb.maxSize)
 	batch.mtx.Unlock()
 
-	if bufLen >= int(tb.maxSize) {
+	if shouldFlush {
 		return tb.flushTopic(batch)
 	}
 	return nil

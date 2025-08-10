@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/mush1e/obelisk/internal/server"
+	"github.com/mush1e/obelisk/internal/storage"
 )
 
 // main initializes and starts the Obelisk server with graceful shutdown handling.
@@ -17,6 +19,9 @@ func main() {
 	// Set up channel to listen for interrupt signals for graceful shutdown
 	gracefulShutdown := make(chan os.Signal, 1)
 	signal.Notify(gracefulShutdown, syscall.SIGINT, syscall.SIGTERM)
+
+	// Initialize storage pool before starting server
+	storage.InitializePool(time.Hour, time.Minute*10)
 
 	logFilePath := "data/topics/"
 
