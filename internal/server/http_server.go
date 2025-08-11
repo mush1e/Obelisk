@@ -56,17 +56,20 @@ type HTTPServer struct {
 //
 // Returns:
 //   - *HTTPServer: Configured server ready to start accepting HTTP requests
-func NewHTTPServer(addr string, topicService *services.TopicService) *HTTPServer {
+func NewHTTPServer(addr string, brokerService *services.BrokerService) *HTTPServer {
 	// Create HTTP router and configure endpoint handlers
 	mux := http.NewServeMux()
 
 	// Health check endpoint for load balancer and monitoring system integration
 	// This endpoint provides a simple way to verify server availability
-	mux.Handle("/health", handlers.Health())
+	mux.Handle("GET /health", handlers.Health())
 
 	// Statistics endpoint for operational monitoring and capacity planning
 	// Requires topic query parameter and returns JSON with buffer/persist counts
-	mux.Handle("/stats", handlers.TopicStats(topicService))
+	mux.Handle("GET /stats", handlers.TopicStats(brokerService))
+
+	// Topics POST endpoint to send topic based messages
+	mux.Handle("POST /topics/{topic}/messages", handlers.PostMessageHandler(brokerService))
 
 	return &HTTPServer{
 		srv: &http.Server{

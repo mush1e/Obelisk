@@ -38,4 +38,7 @@ func main() {
 
 	fmt.Println("\nServer shutting down!")
 	srv.Stop()
+	if err := storage.ShutdownPool(); err != nil {
+		fmt.Println("error shutting down storage pool : " + err.Error())
+	}
 }

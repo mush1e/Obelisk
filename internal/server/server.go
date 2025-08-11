@@ -89,10 +89,10 @@ func NewServer(tcpAddr, httpAddr, logFilePath string) *Server {
 
 	// Create topic service that provides access to batcher statistics
 	// This service layer abstracts broker internals for the HTTP API
-	topicService := services.NewTopicService(batcher)
+	brokerService := services.NewBrokerService(topicBuffers, batcher)
 
 	// Initialize HTTP server with REST API endpoints for monitoring and administration
-	httpServer := NewHTTPServer(httpAddr, topicService)
+	httpServer := NewHTTPServer(httpAddr, brokerService)
 
 	return &Server{
 		tcpServer:    tcpServer,

@@ -54,7 +54,7 @@ import (
 //
 // Returns:
 //   - http.Handler: Configured handler ready to be mounted on an HTTP router
-func TopicStats(topicService *services.TopicService) http.Handler {
+func TopicStats(brokerService *services.BrokerService) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Extract topic name from query parameters
 		topic := r.URL.Query().Get("topic")
@@ -65,7 +65,7 @@ func TopicStats(topicService *services.TopicService) http.Handler {
 		}
 
 		// Retrieve statistics from the topic service
-		buffered, persisted, err := topicService.GetStats(topic)
+		buffered, persisted, err := brokerService.GetTopicStats(topic)
 		if err != nil {
 			// Return error if statistics retrieval fails
 			// This could happen if the topic doesn't exist or storage access fails
