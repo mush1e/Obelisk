@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -100,6 +101,11 @@ func (tb *TopicBatcher) Start() error {
 		return errors.New("failed to create base directory " + err.Error())
 	}
 
+	// Discover and load existing topics
+	if err := tb.discoverExistingTopics(); err != nil {
+		fmt.Printf("[BATCHER] Warning: failed to discover existing topics: %v\n", err)
+	}
+
 	// Start background flush routine
 	tb.wg.Add(1)
 	ticker := time.NewTicker(tb.maxWait)
@@ -118,6 +124,50 @@ func (tb *TopicBatcher) Start() error {
 			}
 		}
 	}()
+	return nil
+}
+
+// discoverExistingTopics loads metadata for existing topics from disk
+func (tb *TopicBatcher) discoverExistingTopics() error {
+	// Find all .log files in the base directory
+	files, err := filepath.Glob(filepath.Join(tb.baseDir, "*.log"))
+	if err != nil {
+		return err
+	}
+
+	tb.mtx.Lock()
+	defer tb.mtx.Unlock()
+
+	for _, logFile := range files {
+		// Extract topic name from filename
+		base := filepath.Base(logFile)
+		topic := strings.TrimSuffix(base, ".log")
+
+		// Skip if already loaded
+		if _, exists := tb.batches[topic]; exists {
+			continue
+		}
+
+		// Create batch for discovered topic
+		idxFile := filepath.Join(tb.baseDir, topic+".idx")
+
+		// Load existing index
+		index, err := storage.LoadIndex(idxFile)
+		if err != nil {
+			fmt.Printf("[BATCHER] Warning: failed to load index for topic %s: %v\n", topic, err)
+			index = &storage.OffsetIndex{Positions: []int64{}}
+		}
+
+		batch := &TopicBatch{
+			buffer:  make([]message.Message, 0, tb.maxSize),
+			index:   index,
+			logFile: logFile,
+			idxFile: idxFile,
+		}
+
+		tb.batches[topic] = batch
+		fmt.Printf("[BATCHER] Discovered existing topic: %s (messages: %d)\n", topic, len(index.Positions))
+	}
 	return nil
 }
 
