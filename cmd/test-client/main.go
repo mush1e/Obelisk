@@ -106,7 +106,7 @@ func testTimeBatching(writer *bufio.Writer) {
 func testRealisticLoad(writer *bufio.Writer) {
 	fmt.Println("Testing realistic load (messages over time)...")
 
-	for i := range 20 {
+	for i := range 2001 {
 		// Create test message with rotating topics
 		msg := message.Message{
 			Timestamp: time.Now(),

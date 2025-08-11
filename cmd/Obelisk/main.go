@@ -25,7 +25,8 @@ func main() {
 
 	logFilePath := "data/topics/"
 
-	srv := server.NewServer(":8080", logFilePath)
+	srv := server.NewServer(":8080", ":8081", logFilePath)
+
 	if err := srv.Start(); err != nil {
 		fmt.Printf("Failed to start server: %v\n", err)
 		return

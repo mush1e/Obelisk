@@ -2,8 +2,10 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -14,22 +16,54 @@ import (
 	"github.com/mush1e/obelisk/pkg/protocol"
 )
 
-// Server holds TCP server state
+// Server holds server state
+// Currently it handles the custom binary protocol we created and HTTP
 type Server struct {
-	address  string
-	listener net.Listener
-	wg       sync.WaitGroup
-	quit     chan struct{}
-
-	// storage stuff
+	address      string
+	listener     net.Listener
+	httpAddr     string       // Address for http server to listen
+	httpServer   *http.Server // HTTP server instance
+	wg           sync.WaitGroup
+	quit         chan struct{}
 	topicBuffers *buffer.TopicBuffers
 	batcher      *batch.TopicBatcher
 }
 
+// setupHTTPServer instantiates our HTTP server and sets up some basic routes for now
+func (s *Server) setupHTTPServer() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	// Could add stats endpoint here:
+	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		topic := r.URL.Query().Get("topic")
+		if topic == "" {
+			http.Error(w, "topic query param required", http.StatusBadRequest)
+			return
+		}
+		buffered, persisted, err := s.GetTopicStats(topic)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"topic":%q,"buffered":%d,"persisted":%d}`, topic, buffered, persisted)
+	})
+
+	s.httpServer = &http.Server{
+		Addr:    s.httpAddr,
+		Handler: mux,
+	}
+}
+
 // NewServer creates a new Server instance
-func NewServer(address, logFilePath string) *Server {
+func NewServer(address, httpAddress, logFilePath string) *Server {
 	return &Server{
 		address:      address,
+		httpAddr:     httpAddress,
 		quit:         make(chan struct{}),
 		topicBuffers: buffer.NewTopicBuffers(100), // Increased buffer size
 		batcher:      batch.NewTopicBatcher(logFilePath, 100, time.Second*5),
@@ -43,16 +77,26 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("failed to start listener: %w", err)
 	}
+	fmt.Println("TCP server started on", s.address)
 
-	fmt.Println("Server started on", s.address)
-
-	// Start the batcher
 	if err := s.batcher.Start(); err != nil {
 		return fmt.Errorf("failed to start batcher: %w", err)
 	}
 
+	// HTTP server setup
+	s.setupHTTPServer()
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		fmt.Println("HTTP server started on", s.httpAddr)
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Println("HTTP server error:", err)
+		}
+	}()
+
 	s.wg.Add(1)
 	go s.acceptLoop()
+
 	return nil
 }
 
@@ -129,14 +173,25 @@ func (s *Server) handleConnection(conn net.Conn) {
 func (s *Server) Stop() error {
 	close(s.quit)
 
+	// TCP listener
 	if s.listener != nil {
 		if err := s.listener.Close(); err != nil {
-			return fmt.Errorf("failed to close listener: %w", err)
+			fmt.Println("Error closing TCP listener:", err)
+		}
+	}
+
+	// HTTP shutdown
+	if s.httpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			fmt.Println("Error shutting down HTTP server:", err)
 		}
 	}
 
 	s.batcher.Stop()
 	storage.ShutdownPool()
+
 	s.wg.Wait()
 	fmt.Println("Server stopped")
 	return nil
