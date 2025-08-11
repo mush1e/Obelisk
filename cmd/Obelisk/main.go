@@ -37,7 +37,5 @@ func main() {
 	<-gracefulShutdown
 
 	fmt.Println("\nServer shutting down!")
-	if err := srv.Stop(); err != nil {
-		fmt.Println("error while graceful shutdown : ", err)
-	}
+	srv.Stop()
 }
