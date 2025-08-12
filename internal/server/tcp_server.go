@@ -1,15 +1,6 @@
 package server
 
-// This package provides TCP server components for the Obelisk message broker's high-performance
-// message ingestion interface. The TCP server handles concurrent client connections and processes
-// incoming messages through a configurable handler interface. It implements connection pooling,
-// graceful shutdown, and error recovery to ensure reliable message processing under high load.
-//
-// The TCP server handles:
-// - Concurrent client connection management with goroutine-per-connection model
-// - Binary protocol message parsing and deserialization from network streams
-// - Message delegation to pluggable connection handlers for processing
-// - Graceful shutdown with proper connection cleanup and message drain
+// TCP server components for high-performance message ingestion with concurrent connection handling.
 // - Error recovery for network issues, malformed messages, and handler failures
 // - Client acknowledgment responses to confirm message receipt
 
@@ -43,15 +34,7 @@ type TCPServer struct {
 	service  *services.BrokerService
 }
 
-// NewTCPServer creates a new TCP server instance with the specified address and handler.
-// The server is initialized but not yet started - call Start() to begin accepting connections.
-// The handler will be called for each message received from any connected client.
-//
-// Parameters:
-//   - address: Network address to bind to (e.g., ":8080" or "localhost:8080")
-//   - handler: Implementation of ConnectionHandler interface for processing messages
-//
-// Returns:
+// NewTCPServer creates a new TCP server with the specified address and message handler.
 //   - *TCPServer: Configured server instance ready to start accepting connections
 func NewTCPServer(address string, service *services.BrokerService) *TCPServer {
 	return &TCPServer{
@@ -61,10 +44,7 @@ func NewTCPServer(address string, service *services.BrokerService) *TCPServer {
 	}
 }
 
-// Start initializes the TCP listener and begins accepting client connections.
-// This method starts the server infrastructure but returns immediately after
-// launching the accept loop in a background goroutine. The server will continue
-// running until Stop() is called.
+// Start initializes the TCP listener and begins accepting connections.
 //
 // The startup process:
 // 1. Creates TCP listener on the configured address
@@ -98,11 +78,8 @@ func (t *TCPServer) Start() error {
 // Shutdown sequence:
 // 1. Signal shutdown to all goroutines via quit channel
 // 2. Close listener to stop accepting new connections
-// 3. Wait for all connection handling goroutines to complete
-//
-// This method blocks until all connections are closed and all messages are processed.
+// Stop gracefully shuts down the server and waits for connections to close.
 func (t *TCPServer) Stop() {
-	// Signal shutdown to all goroutines
 	close(t.quit)
 
 	// Close listener to stop accepting new connections
@@ -115,10 +92,7 @@ func (t *TCPServer) Stop() {
 	fmt.Println("TCP server stopped")
 }
 
-// acceptLoop continuously accepts new client connections until shutdown is signaled.
-// This method runs in a background goroutine and spawns a new goroutine for each
-// accepted connection. It handles the race condition between shutdown signaling
-// and connection acceptance to ensure clean termination.
+// acceptLoop accepts connections until shutdown, spawning goroutines for each client.
 //
 // The loop distinguishes between shutdown-related errors (expected) and actual
 // network errors (unexpected) to provide appropriate logging and error handling.
@@ -150,23 +124,6 @@ func (t *TCPServer) acceptLoop() {
 }
 
 // handleConnection processes messages from a single client connection until disconnect or shutdown.
-// This method runs in its own goroutine per connection, enabling concurrent processing of
-// multiple clients. It implements the binary message protocol and handles various error
-// conditions gracefully.
-//
-// Connection lifecycle:
-// 1. Create buffered reader for efficient message parsing
-// 2. Enter message processing loop
-// 3. Read and deserialize messages using binary protocol
-// 4. Delegate message processing to configured handler
-// 5. Send acknowledgment to client
-// 6. Handle errors and disconnection scenarios appropriately
-//
-// The method ensures proper cleanup of connection resources and coordinated shutdown
-// when the server is being terminated.
-//
-// Parameters:
-//   - conn: TCP connection to the client that will be processed
 func (t *TCPServer) handleConnection(conn net.Conn) {
 	defer t.wg.Done()
 	defer conn.Close() // Ensure connection is closed when goroutine exits
@@ -202,7 +159,6 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 				continue // Skip this message but keep connection alive
 			}
 
-			// Delegate message processing to configured handler
 			if err := t.service.PublishMessage(&msg); err != nil {
 				// Handler error - log but continue processing
 				fmt.Printf("Error handling message: %v\n", err)

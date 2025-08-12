@@ -1,27 +1,13 @@
 package message
 
-// This file contains unit tests for the message serialization and deserialization
-// functionality used in the Obelisk message broker. The tests validate the binary
-// protocol implementation to ensure reliable message encoding, transmission, and
-// storage operations across the system.
-//
-// Test coverage includes:
-// - Round-trip serialization/deserialization integrity
-// - Message field preservation across binary encoding
-// - Timestamp precision and accuracy validation
-// - Error handling for malformed or corrupted data
-// - Binary format compatibility and consistency
+// Unit tests for message serialization and deserialization functionality.
 
 import (
 	"testing"
 	"time"
 )
 
-// TestSerializeDeserialize validates that messages can be serialized to binary format
-// and then deserialized back to their original form without data loss or corruption.
-// This is a critical test for the message broker's storage and network transmission
-// capabilities, ensuring that message data integrity is maintained throughout the
-// system's processing pipeline.
+// TestSerializeDeserialize validates round-trip serialization integrity.
 //
 // The test verifies:
 // 1. Successful serialization of a complete message to binary format

@@ -1,6 +1,4 @@
-// Package main provides a test client for the Obelisk message broker.
-// It supports different test scenarios to validate batching behavior,
-// including size-based batching, time-based batching, and realistic load testing.
+// Test client for the Obelisk message broker with various batching scenarios.
 package main
 
 import (

@@ -1,6 +1,4 @@
-// Package main provides a test reader utility for the Obelisk message broker.
-// It reads and displays all stored messages from topic log files in a specified directory,
-// sorted by timestamp within each topic.
+// Test reader utility for displaying stored messages from topic log files.
 package main
 
 import (

@@ -1,16 +1,6 @@
 package buffer
 
-// This file contains unit tests for the ring buffer implementation used in the
-// Obelisk message broker. The tests validate the core functionality of the
-// circular buffer including message insertion, overwrite behavior, ordering,
-// and thread-safety characteristics.
-//
-// Test coverage includes:
-// - Basic push and retrieval operations
-// - Overwrite behavior when capacity is exceeded
-// - Message ordering preservation
-// - Empty buffer edge cases
-// - Peek operations for recent message access
+// Unit tests for the ring buffer implementation.
 
 import (
 	"testing"
@@ -21,12 +11,6 @@ import (
 // TestBufferPushAndOverwrite validates that the ring buffer correctly overwrites
 // the oldest messages when capacity is exceeded while maintaining proper ordering
 // of the remaining messages.
-//
-// This test verifies:
-// 1. Buffer correctly stores messages up to capacity
-// 2. Oldest message is removed when capacity is exceeded
-// 3. Remaining messages maintain their relative order
-// 4. Buffer size remains constant at capacity after overwrite begins
 func TestBufferPushAndOverwrite(t *testing.T) {
 	// Create a small buffer to easily test overwrite behavior
 	buf := NewBuffer(3)

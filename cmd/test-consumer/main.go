@@ -1,6 +1,4 @@
-// Package main provides a test consumer for the Obelisk message broker.
-// It supports different consumption modes including single polling, continuous polling,
-// and reset-and-poll operations to test consumer functionality.
+// Test consumer for the Obelisk message broker with various consumption modes.
 package main
 
 import (

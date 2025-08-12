@@ -1,5 +1,4 @@
-// Package main provides the entry point for the Obelisk message broker server.
-// It sets up graceful shutdown handling and starts the TCP server on port 8080.
+// Obelisk message broker server entry point.
 package main
 
 import (
@@ -13,14 +12,11 @@ import (
 	"github.com/mush1e/obelisk/internal/storage"
 )
 
-// main initializes and starts the Obelisk server with graceful shutdown handling.
-// The server listens on port 8080 and stores topic data in the "data/topics/" directory.
 func main() {
-	// Set up channel to listen for interrupt signals for graceful shutdown
+	// Graceful shutdown handling
 	gracefulShutdown := make(chan os.Signal, 1)
 	signal.Notify(gracefulShutdown, syscall.SIGINT, syscall.SIGTERM)
 
-	// Initialize storage pool before starting server
 	storage.InitializePool(time.Hour, time.Minute*10)
 
 	logFilePath := "data/topics/"
@@ -33,7 +29,6 @@ func main() {
 	}
 	fmt.Println("Server running. Press Ctrl+C to stop...")
 
-	// Block until we receive a shutdown signal
 	<-gracefulShutdown
 
 	fmt.Println("\nServer shutting down!")

@@ -1,14 +1,6 @@
 package message
 
-// This package provides message types and serialization utilities for the Obelisk message broker.
-// Messages are the fundamental data units that flow through the system, containing metadata
-// like timestamps and topics, along with key-value payload data. The package implements
-// efficient binary serialization for network transmission and storage persistence.
-//
-// The message system handles:
-// - Structured message representation with timestamp, topic, key, and value fields
-// - Binary serialization protocol for efficient network transmission
-// - Deserialization with proper error handling and data validation
+// Message types and binary serialization utilities for the Obelisk message broker.
 // - Cross-platform compatibility using little-endian byte ordering
 // - Variable-length string encoding with explicit length prefixes
 // - Nanosecond precision timestamps for high-resolution message ordering
@@ -40,29 +32,6 @@ type Message struct {
 }
 
 // Serialize converts a message into a binary byte slice for storage or network transmission.
-// The serialization format uses little-endian byte ordering for cross-platform compatibility
-// and encodes variable-length strings with explicit length prefixes to support proper
-// deserialization without delimiters.
-//
-// Binary format layout:
-// 1. Timestamp: 8 bytes (int64, Unix nanoseconds, little-endian)
-// 2. Topic length: 4 bytes (uint32, little-endian)
-// 3. Topic data: Variable length bytes (UTF-8 encoded string)
-// 4. Key length: 4 bytes (uint32, little-endian)
-// 5. Key data: Variable length bytes (UTF-8 encoded string)
-// 6. Value length: 4 bytes (uint32, little-endian)
-// 7. Value data: Variable length bytes (UTF-8 encoded string)
-//
-// This format ensures efficient parsing during deserialization while maintaining
-// compact representation for storage efficiency. The length-prefixed approach
-// eliminates the need for escape characters or delimiters in the payload data.
-//
-// Parameters:
-//   - msg: Message instance to serialize into binary format
-//
-// Returns:
-//   - []byte: Binary representation of the message
-//   - error: Any error that occurred during serialization
 func Serialize(msg Message) ([]byte, error) {
 	var buf bytes.Buffer
 
@@ -106,30 +75,6 @@ func Serialize(msg Message) ([]byte, error) {
 }
 
 // Deserialize converts a binary byte slice back into a Message struct.
-// This method reverses the serialization process, reading the binary format
-// created by Serialize() and reconstructing the original message data with
-// proper error handling for corrupted or truncated data.
-//
-// The deserialization process follows the exact binary format specification:
-// 1. Reads 8-byte timestamp and converts from Unix nanoseconds to time.Time
-// 2. Reads 4-byte topic length, then reads topic string data
-// 3. Reads 4-byte key length, then reads key string data
-// 4. Reads 4-byte value length, then reads value string data
-//
-// Error handling covers scenarios like:
-// - Truncated data that doesn't contain all expected fields
-// - Invalid length fields that exceed remaining data
-// - I/O errors during binary reading operations
-//
-// The method uses a bytes.Reader for efficient sequential reading and
-// binary.Read for automatic endianness handling during numeric field parsing.
-//
-// Parameters:
-//   - data: Binary byte slice containing serialized message data
-//
-// Returns:
-//   - Message: Reconstructed message with all fields populated
-//   - error: Any error that occurred during deserialization
 func Deserialize(data []byte) (Message, error) {
 	var msg Message
 	buf := bytes.NewReader(data)
