@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/mush1e/obelisk/internal/message"
+	"github.com/mush1e/obelisk/internal/services"
 	"github.com/mush1e/obelisk/pkg/protocol"
 )
 
@@ -35,29 +36,11 @@ import (
 // - All goroutines coordinate through quit channel for clean shutdown
 // - WaitGroup ensures all goroutines complete before server termination
 type TCPServer struct {
-	address  string            // Network address to bind the TCP listener to
-	listener net.Listener      // TCP listener for accepting incoming connections
-	quit     chan struct{}     // Channel for coordinating graceful shutdown across goroutines
-	wg       sync.WaitGroup    // Ensures all connection goroutines complete before shutdown
-	handler  ConnectionHandler // Pluggable handler for processing received messages
-}
-
-// ConnectionHandler defines the interface for processing messages received from TCP connections.
-// This interface allows the TCP server to be decoupled from specific message processing
-// logic, enabling different handlers for different deployment scenarios or testing.
-// Implementations should handle errors gracefully and return meaningful error information.
-type ConnectionHandler interface {
-	// HandleMessage processes a single message received from a client connection.
-	// The handler should perform all necessary operations (storage, validation, etc.)
-	// and return an error if processing fails. Errors are logged by the TCP server
-	// but do not terminate the connection.
-	//
-	// Parameters:
-	//   - msg: Pointer to the deserialized message to be processed
-	//
-	// Returns:
-	//   - error: Any error that occurred during message processing
-	HandleMessage(msg *message.Message) error
+	address  string         // Network address to bind the TCP listener to
+	listener net.Listener   // TCP listener for accepting incoming connections
+	quit     chan struct{}  // Channel for coordinating graceful shutdown across goroutines
+	wg       sync.WaitGroup // Ensures all connection goroutines complete before shutdown
+	service  *services.BrokerService
 }
 
 // NewTCPServer creates a new TCP server instance with the specified address and handler.
@@ -70,11 +53,11 @@ type ConnectionHandler interface {
 //
 // Returns:
 //   - *TCPServer: Configured server instance ready to start accepting connections
-func NewTCPServer(address string, handler ConnectionHandler) *TCPServer {
+func NewTCPServer(address string, service *services.BrokerService) *TCPServer {
 	return &TCPServer{
 		address: address,
 		quit:    make(chan struct{}), // Unbuffered channel for shutdown coordination
-		handler: handler,
+		service: service,
 	}
 }
 
@@ -220,7 +203,7 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 			}
 
 			// Delegate message processing to configured handler
-			if err := t.handler.HandleMessage(&msg); err != nil {
+			if err := t.service.PublishMessage(&msg); err != nil {
 				// Handler error - log but continue processing
 				fmt.Printf("Error handling message: %v\n", err)
 			}

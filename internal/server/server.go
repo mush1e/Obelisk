@@ -80,16 +80,12 @@ func NewServer(tcpAddr, httpAddr, logFilePath string) *Server {
 	// This balances storage efficiency with message durability requirements
 	batcher := batch.NewTopicBatcher(logFilePath, 100, time.Second*5)
 
-	// Create connection handler that coordinates between buffering and batching
-	// The handler ensures all messages are stored in both systems for dual-path architecture
-	tcpHandler := NewObeliskConnectionHandler(topicBuffers, batcher)
-
-	// Initialize TCP server for high-performance message ingestion
-	tcpServer := NewTCPServer(tcpAddr, tcpHandler)
-
 	// Create topic service that provides access to batcher statistics
 	// This service layer abstracts broker internals for the HTTP API
 	brokerService := services.NewBrokerService(topicBuffers, batcher)
+
+	// Initialize TCP server for high-performance message ingestion
+	tcpServer := NewTCPServer(tcpAddr, brokerService)
 
 	// Initialize HTTP server with REST API endpoints for monitoring and administration
 	httpServer := NewHTTPServer(httpAddr, brokerService)
