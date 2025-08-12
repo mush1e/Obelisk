@@ -30,7 +30,6 @@ func NewConsumer(baseDir string, topics ...string) *Consumer {
 		baseDir:          baseDir,
 	}
 
-
 	for _, t := range topics {
 		c.subscribedTopics[t] = 0
 	}
@@ -77,7 +76,6 @@ func (c *Consumer) Subscribe(topic string) {
 }
 
 // Unsubscribe removes a topic subscription from the consumer.
-/
 func (c *Consumer) Unsubscribe(topic string) {
 	delete(c.subscribedTopics, topic) // Remove topic and its offset information
 }
