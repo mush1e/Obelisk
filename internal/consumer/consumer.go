@@ -11,6 +11,8 @@ import (
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/internal/retry"
 	"github.com/mush1e/obelisk/internal/storage"
+
+	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
 )
 
 // Consumer represents a consumer instance for the Obelisk message broker.
@@ -44,7 +46,8 @@ func (c *Consumer) Poll(topic string) ([]message.Message, error) {
 	// Check if consumer is subscribed to the requested topic
 	offset, subscribed := c.subscribedTopics[topic]
 	if !subscribed {
-		return nil, fmt.Errorf("not subscribed to topic %s", topic)
+		return nil, obeliskErrors.NewPermanentError("poll", "not subscribed to topic",
+			fmt.Errorf("topic: %s", topic))
 	}
 
 	// Construct file paths for topic storage files
@@ -84,7 +87,8 @@ func (c *Consumer) Poll(topic string) ([]message.Message, error) {
 func (c *Consumer) Commit(topic string, offset uint64) error {
 	// Verify subscription exists before updating offset
 	if _, ok := c.subscribedTopics[topic]; !ok {
-		return fmt.Errorf("not subscribed to topic %s", topic)
+		return obeliskErrors.NewPermanentError("commit", "not subscribed to topic",
+			fmt.Errorf("topic: %s", topic))
 	}
 
 	// Update in-memory offset tracking
@@ -107,7 +111,8 @@ func (c *Consumer) Unsubscribe(topic string) {
 func (c *Consumer) GetCurrentOffset(topic string) (uint64, error) {
 	offset, subscribed := c.subscribedTopics[topic]
 	if !subscribed {
-		return 0, fmt.Errorf("not subscribed to topic %s", topic)
+		return 0, obeliskErrors.NewPermanentError("get_offset", "not subscribed to topic",
+			fmt.Errorf("topic: %s", topic))
 	}
 	return offset, nil
 }
@@ -136,7 +141,8 @@ func (c *Consumer) GetTopicMessageCount(topic string) (int64, error) {
 func (c *Consumer) Reset(topic string) error {
 	// Verify subscription exists before resetting offset
 	if _, ok := c.subscribedTopics[topic]; !ok {
-		return fmt.Errorf("not subscribed to topic %s", topic)
+		return obeliskErrors.NewPermanentError("reset", "not subscribed to topic",
+			fmt.Errorf("topic: %s", topic))
 	}
 
 	// Reset offset to beginning of topic

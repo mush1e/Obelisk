@@ -13,6 +13,8 @@ import (
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/internal/services"
 	"github.com/mush1e/obelisk/pkg/protocol"
+
+	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
 )
 
 // TCPServer manages TCP connections and delegates message processing to handlers.
@@ -59,7 +61,7 @@ func (t *TCPServer) Start() error {
 	// Create TCP listener on configured address
 	t.listener, err = net.Listen("tcp", t.address)
 	if err != nil {
-		return fmt.Errorf("failed to start TCP listener: %w", err)
+		return obeliskErrors.NewConfigurationError("start_tcp_server", "failed to start TCP listener", err)
 	}
 
 	// Log startup for operational visibility

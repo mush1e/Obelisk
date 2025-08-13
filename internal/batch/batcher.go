@@ -5,7 +5,6 @@ package batch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -67,7 +66,7 @@ func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration, pool
 func (tb *TopicBatcher) Start() error {
 
 	if err := os.MkdirAll(tb.baseDir, 0755); err != nil {
-		return errors.New("failed to create base directory " + err.Error())
+		return obeliskErrors.NewConfigurationError("start_batcher", "failed to create base directory", err)
 	}
 
 	if err := tb.discoverExistingTopics(); err != nil {
@@ -251,7 +250,8 @@ func (tb *TopicBatcher) GetTopicStats(topic string) (int, int64, error) {
 	batch, exists := tb.batches[topic]
 	tb.mtx.RUnlock()
 	if !exists {
-		return 0, 0, fmt.Errorf("topic %s not found", topic)
+		return 0, 0, obeliskErrors.NewPermanentError("get_topic_stats", "topic not found",
+			fmt.Errorf("topic: %s", topic))
 	}
 
 	batch.mtx.Lock()

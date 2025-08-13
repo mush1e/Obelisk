@@ -10,6 +10,8 @@ import (
 	"github.com/mush1e/obelisk/internal/buffer"
 	"github.com/mush1e/obelisk/internal/services"
 	"github.com/mush1e/obelisk/internal/storage"
+
+	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
 )
 
 // Server orchestrates the complete Obelisk message broker infrastructure.
@@ -59,11 +61,11 @@ func NewServer(tcpAddr, httpAddr, logFilePath string) *Server {
 // Start starts all subsystems in proper order: batcher, TCP server, HTTP server.
 func (s *Server) Start() error {
 	if err := s.batcher.Start(); err != nil {
-		return fmt.Errorf("failed to start batcher: %w", err)
+		return obeliskErrors.NewConfigurationError("start_server", "failed to start batcher", err)
 	}
 
 	if err := s.tcpServer.Start(); err != nil {
-		return fmt.Errorf("failed to start TCP server: %w", err)
+		return obeliskErrors.NewConfigurationError("start_server", "failed to start TCP server", err)
 	}
 
 	s.wg.Add(1)
