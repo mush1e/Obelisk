@@ -7,7 +7,12 @@ import (
 	"sync"
 
 	"github.com/mush1e/obelisk/internal/message"
+
+	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
 )
+
+const MaxTopics = 1000
+const MaxTopicNameLength = 255
 
 // TopicBuffers manages a collection of ring buffers, one per topic.
 // Each topic gets its own isolated buffer to prevent cross-topic interference
@@ -32,16 +37,27 @@ func NewTopicBuffers(capacity int) *TopicBuffers {
 }
 
 // Push adds a message to its topic buffer, creating the buffer if needed.
-func (tb *TopicBuffers) Push(msg message.Message) {
-	// Fast path: check if buffer exists
+func (tb *TopicBuffers) Push(msg message.Message) error {
+	// Validate topic name
+	if len(msg.Topic) == 0 {
+		return obeliskErrors.NewPermanentError("buffer_push", "empty topic name", nil)
+	}
+	if len(msg.Topic) > MaxTopicNameLength {
+		return obeliskErrors.NewPermanentError("buffer_push", "topic name too long", nil)
+	}
+
 	tb.mtx.RLock()
 	buf, exists := tb.buffers[msg.Topic]
+	topicCount := len(tb.buffers)
 	tb.mtx.RUnlock()
 
-	// Create buffer if needed
 	if !exists {
+		// Check topic limit
+		if topicCount >= MaxTopics {
+			return obeliskErrors.NewResourceError("buffer_push", "too many topics", nil)
+		}
+
 		tb.mtx.Lock()
-		// Double-check pattern
 		if buf, exists = tb.buffers[msg.Topic]; !exists {
 			buf = NewBuffer(tb.capacity)
 			tb.buffers[msg.Topic] = buf
@@ -49,7 +65,7 @@ func (tb *TopicBuffers) Push(msg message.Message) {
 		tb.mtx.Unlock()
 	}
 
-	buf.Push(msg)
+	return buf.Push(msg)
 }
 
 // GetRecentByTopic returns recent messages for a topic in chronological order.
@@ -85,9 +101,15 @@ func NewBuffer(capacity int) *Buffer {
 }
 
 // Push adds a message to the ring buffer, overwriting old messages when full.
-func (b *Buffer) Push(msg message.Message) {
+func (b *Buffer) Push(msg message.Message) error {
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
+
+	// Validate message size (optional)
+	estimatedSize := len(msg.Topic) + len(msg.Key) + len(msg.Value) + 8 // 8 for timestamp
+	if estimatedSize > 1024*1024 {                                      // 1MB limit per message
+		return obeliskErrors.NewPermanentError("buffer_push_message", "message too large for buffer", nil)
+	}
 
 	b.data[b.tail] = msg
 	b.tail = (b.tail + 1) % b.capacity
@@ -97,6 +119,8 @@ func (b *Buffer) Push(msg message.Message) {
 	} else {
 		b.size++
 	}
+
+	return nil
 }
 
 // Peek returns the most recent message without removing it.

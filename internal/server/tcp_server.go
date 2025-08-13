@@ -6,11 +6,14 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/mush1e/obelisk/internal/message"
+	"github.com/mush1e/obelisk/internal/retry"
 	"github.com/mush1e/obelisk/internal/services"
 	"github.com/mush1e/obelisk/pkg/protocol"
 
@@ -128,47 +131,101 @@ func (t *TCPServer) acceptLoop() {
 // handleConnection processes messages from a single client connection until disconnect or shutdown.
 func (t *TCPServer) handleConnection(conn net.Conn) {
 	defer t.wg.Done()
-	defer conn.Close() // Ensure connection is closed when goroutine exits
+	defer conn.Close()
 
-	// Create buffered reader for efficient message parsing
 	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+
+	// Configure retry for acknowledgments
+	ackRetryConfig := retry.Config{
+		MaxAttempts:   3,
+		InitialDelay:  50 * time.Millisecond,
+		MaxDelay:      500 * time.Millisecond,
+		BackoffFactor: 2.0,
+	}
 
 	for {
 		select {
 		case <-t.quit:
-			// Server shutdown requested - close connection gracefully
 			fmt.Println("Closing connection:", conn.RemoteAddr())
 			return
 		default:
-			// Read message using binary protocol
+			// Set read deadline to prevent blocking forever
+			conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
 			msgBytes, err := protocol.ReadMessage(reader)
 			if err != nil {
-				if err.Error() == "EOF" {
-					// Client disconnected normally
-					fmt.Println("Client disconnected:", conn.RemoteAddr())
-				} else {
-					// Network or protocol error
-					fmt.Println("Error receiving message from", conn.RemoteAddr(), ":", err)
+				// Check if it's a retryable error
+				if obeliskErrors.IsRetryable(err) {
+					// Log and continue for transient errors
+					fmt.Printf("Transient error from %s: %v\n", conn.RemoteAddr(), err)
+					continue
 				}
-				return // Exit connection handler
+
+				// Handle specific error types
+				switch obeliskErrors.GetErrorType(err) {
+				case obeliskErrors.ErrorTypeData:
+					// Data corruption - log and continue
+					fmt.Printf("Corrupted message from %s: %v\n", conn.RemoteAddr(), err)
+					// Send NACK to client
+					t.sendNack(writer, "CORRUPTED")
+					continue
+				case obeliskErrors.ErrorTypePermanent:
+					// Permanent error - close connection
+					fmt.Printf("Protocol violation from %s: %v\n", conn.RemoteAddr(), err)
+					t.sendNack(writer, "PROTOCOL_ERROR")
+					return
+				default:
+					// EOF or other errors - disconnect
+					if err.Error() == "EOF" {
+						fmt.Println("Client disconnected:", conn.RemoteAddr())
+					} else {
+						fmt.Printf("Connection error from %s: %v\n", conn.RemoteAddr(), err)
+					}
+					return
+				}
 			}
 
-			// Deserialize binary message data to Message struct
 			msg, err := message.Deserialize(msgBytes)
 			if err != nil {
-				// Malformed message - log error but continue processing
-				fmt.Println("Invalid message format:", err)
-				continue // Skip this message but keep connection alive
+				fmt.Printf("Invalid message format from %s: %v\n", conn.RemoteAddr(), err)
+				t.sendNack(writer, "INVALID_FORMAT")
+				continue
 			}
 
-			if err := t.service.PublishMessage(&msg); err != nil {
-				// Handler error - log but continue processing
-				fmt.Printf("Error handling message: %v\n", err)
+			// Process message with retry for transient service errors
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err = retry.Retry(ctx, ackRetryConfig, func() error {
+				return t.service.PublishMessage(&msg)
+			})
+			cancel()
+
+			if err != nil {
+				fmt.Printf("Failed to publish message: %v\n", err)
+				t.sendNack(writer, "PUBLISH_FAILED")
+				continue
 			}
 
-			// Send acknowledgment to client to confirm message receipt
-			// Simple text-based acknowledgment for easy client implementation
-			conn.Write([]byte("OK\n"))
+			// Send acknowledgment with retry
+			ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+			err = retry.Retry(ctx, ackRetryConfig, func() error {
+				if _, err := writer.WriteString("OK\n"); err != nil {
+					return obeliskErrors.NewTransientError("send_ack", "failed to send acknowledgment", err)
+				}
+				return writer.Flush()
+			})
+			cancel()
+
+			if err != nil {
+				fmt.Printf("Failed to send acknowledgment: %v\n", err)
+				// Connection might be broken, exit handler
+				return
+			}
 		}
 	}
+}
+
+func (t *TCPServer) sendNack(w *bufio.Writer, reason string) {
+	w.WriteString(fmt.Sprintf("NACK:%s\n", reason))
+	w.Flush()
 }

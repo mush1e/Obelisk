@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"time"
+
+	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
 )
 
 // Message represents a single message in the Obelisk message broker system.
@@ -35,40 +37,41 @@ type Message struct {
 func Serialize(msg Message) ([]byte, error) {
 	var buf bytes.Buffer
 
-	// Write timestamp as int64 Unix nanoseconds for high precision
-	// Nanosecond precision enables proper message ordering even with high throughput
 	if err := binary.Write(&buf, binary.LittleEndian, msg.Timestamp.UnixNano()); err != nil {
-		return nil, err
+		return nil, obeliskErrors.NewPermanentError("serialize_timestamp", "failed to serialize timestamp", err)
 	}
 
-	// Write topic with length prefix for variable-length string encoding
+	// Write topic with validation
+	if len(msg.Topic) > 255 {
+		return nil, obeliskErrors.NewPermanentError("serialize_topic", "topic name too long (max 255)", nil)
+	}
+
 	topicBytes := []byte(msg.Topic)
 	topicLen := uint32(len(topicBytes))
 	if err := binary.Write(&buf, binary.LittleEndian, topicLen); err != nil {
-		return nil, err
+		return nil, obeliskErrors.NewPermanentError("serialize_topic_length", "failed to serialize topic length", err)
 	}
 	if err := binary.Write(&buf, binary.LittleEndian, topicBytes); err != nil {
-		return nil, err
+		return nil, obeliskErrors.NewPermanentError("serialize_topic_data", "failed to serialize topic data", err)
 	}
 
-	// Write key with length prefix for variable-length string encoding
+	// Similar for key and value...
 	keyBytes := []byte(msg.Key)
 	keyLen := uint32(len(keyBytes))
 	if err := binary.Write(&buf, binary.LittleEndian, keyLen); err != nil {
-		return nil, err
+		return nil, obeliskErrors.NewPermanentError("serialize_key_length", "failed to serialize key length", err)
 	}
 	if _, err := buf.Write(keyBytes); err != nil {
-		return nil, err
+		return nil, obeliskErrors.NewPermanentError("serialize_key_data", "failed to serialize key data", err)
 	}
 
-	// Write value with length prefix for variable-length string encoding
 	valBytes := []byte(msg.Value)
 	valLen := uint32(len(valBytes))
 	if err := binary.Write(&buf, binary.LittleEndian, valLen); err != nil {
-		return nil, err
+		return nil, obeliskErrors.NewPermanentError("serialize_value_length", "failed to serialize value length", err)
 	}
 	if _, err := buf.Write(valBytes); err != nil {
-		return nil, err
+		return nil, obeliskErrors.NewPermanentError("serialize_value_data", "failed to serialize value data", err)
 	}
 
 	return buf.Bytes(), nil
@@ -79,44 +82,44 @@ func Deserialize(data []byte) (Message, error) {
 	var msg Message
 	buf := bytes.NewReader(data)
 
-	// Read timestamp from first 8 bytes and convert to time.Time
-	// Unix nanoseconds provide precise message ordering capabilities
 	var ts int64
 	if err := binary.Read(buf, binary.LittleEndian, &ts); err != nil {
-		return msg, err
+		return msg, obeliskErrors.NewDataError("deserialize_timestamp", "failed to deserialize timestamp", err)
 	}
 	msg.Timestamp = time.Unix(0, ts)
 
-	// Read topic using length-prefixed variable-length string format
-	var TopicLen uint32
-	if err := binary.Read(buf, binary.LittleEndian, &TopicLen); err != nil {
-		return msg, err
+	// Read topic
+	var topicLen uint32
+	if err := binary.Read(buf, binary.LittleEndian, &topicLen); err != nil {
+		return msg, obeliskErrors.NewDataError("deserialize_topic_length", "failed to deserialize topic length", err)
 	}
-	topicBytes := make([]byte, TopicLen)
+	if topicLen > 255 {
+		return msg, obeliskErrors.NewDataError("deserialize_topic", "invalid topic length", nil)
+	}
+	topicBytes := make([]byte, topicLen)
 	if err := binary.Read(buf, binary.LittleEndian, &topicBytes); err != nil {
-		return msg, err
+		return msg, obeliskErrors.NewDataError("deserialize_topic_data", "failed to deserialize topic data", err)
 	}
 	msg.Topic = string(topicBytes)
 
-	// Read key using length-prefixed variable-length string format
+	// Similar for key and value...
 	var keyLen uint32
 	if err := binary.Read(buf, binary.LittleEndian, &keyLen); err != nil {
-		return msg, err
+		return msg, obeliskErrors.NewDataError("deserialize_key_length", "failed to deserialize key length", err)
 	}
 	keyBytes := make([]byte, keyLen)
 	if _, err := buf.Read(keyBytes); err != nil {
-		return msg, err
+		return msg, obeliskErrors.NewDataError("deserialize_key_data", "failed to deserialize key data", err)
 	}
 	msg.Key = string(keyBytes)
 
-	// Read value using length-prefixed variable-length string format
 	var valLen uint32
 	if err := binary.Read(buf, binary.LittleEndian, &valLen); err != nil {
-		return msg, err
+		return msg, obeliskErrors.NewDataError("deserialize_value_length", "failed to deserialize value length", err)
 	}
 	valBytes := make([]byte, valLen)
 	if _, err := buf.Read(valBytes); err != nil {
-		return msg, err
+		return msg, obeliskErrors.NewDataError("deserialize_value_data", "failed to deserialize value data", err)
 	}
 	msg.Value = string(valBytes)
 
