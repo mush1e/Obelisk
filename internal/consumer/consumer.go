@@ -11,8 +11,6 @@ import (
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/internal/retry"
 	"github.com/mush1e/obelisk/internal/storage"
-
-	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
 )
 
 // Consumer represents a consumer instance for the Obelisk message broker.
@@ -64,7 +62,7 @@ func (c *Consumer) Poll(topic string) ([]message.Message, error) {
 		err = retry.Retry(ctx, retry.DefaultConfig(), func() error {
 			msgs, readErr := storage.ReadAllMessages(logFile)
 			if readErr != nil {
-				return obeliskErrors.NewTransientError("read_all_messages", "failed to read messages", readErr)
+				return readErr
 			}
 			messages = msgs
 			return nil
@@ -73,7 +71,7 @@ func (c *Consumer) Poll(topic string) ([]message.Message, error) {
 		err = retry.Retry(ctx, retry.DefaultConfig(), func() error {
 			msgs, readErr := storage.ReadMessagesFromOffset(logFile, idxFile, offset)
 			if readErr != nil {
-				return obeliskErrors.NewTransientError("read_messages_offset", "failed to read from offset", readErr)
+				return readErr
 			}
 			messages = msgs
 			return nil
@@ -125,7 +123,7 @@ func (c *Consumer) GetTopicMessageCount(topic string) (int64, error) {
 	err := retry.Retry(ctx, retry.DefaultConfig(), func() error {
 		cnt, readErr := storage.GetTopicMessageCount(idxFile)
 		if readErr != nil {
-			return obeliskErrors.NewTransientError("get_message_count", "failed to get count", readErr)
+			return readErr
 		}
 		count = cnt
 		return nil

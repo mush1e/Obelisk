@@ -203,7 +203,6 @@ func (tb *TopicBatcher) FlushAll() {
 
 // flushTopic atomically flushes a topic batch. Re-queues on failure.
 func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
-
 	batch.mtx.Lock()
 	if len(batch.buffer) == 0 {
 		batch.mtx.Unlock()
@@ -218,29 +217,30 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err := retry.Retry(ctx, retry.DefaultConfig(), func() error {
-		if err := storage.AppendMessages(tb.pool, batch.logFile, batch.idxFile, local, batch.index); err != nil {
-			if isTemporaryStorageError(err) {
-				return obeliskErrors.NewTransientError("flush_batch", "temporary storage failure", err)
-			}
-			if isDiskFullError(err) {
-				return obeliskErrors.NewResourceError("flush_batch", "disk space exhausted", err)
-			}
-			return obeliskErrors.NewPermanentError("flush_batch", "storage operation failed", err)
-		}
-		return nil
+	// Use aggressive retry config for critical data operations
+	aggressiveConfig := retry.Config{
+		MaxAttempts:   5,
+		InitialDelay:  100 * time.Millisecond,
+		MaxDelay:      10 * time.Second,
+		BackoffFactor: 2.0,
+	}
+
+	err := retry.Retry(ctx, aggressiveConfig, func() error {
+		return storage.AppendMessages(tb.pool, batch.logFile, batch.idxFile, local, batch.index)
 	})
 
 	if err != nil {
 		if obeliskErrors.IsRetryable(err) {
+			// Re-queue messages for retryable errors
 			batch.mtx.Lock()
 			batch.buffer = append(local, batch.buffer...)
 			batch.mtx.Unlock()
 		} else {
+			// Log permanent errors with proper formatting
 			fmt.Printf("[BATCHER] CRITICAL: Dropping %d messages - %s\n", len(local), err.Error())
 		}
+		return err
 	}
-
 	return nil
 }
 
@@ -260,19 +260,4 @@ func (tb *TopicBatcher) GetTopicStats(topic string) (int, int64, error) {
 	batch.mtx.Unlock()
 
 	return buffered, total, nil
-}
-
-func isTemporaryStorageError(err error) bool {
-	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "timeout") ||
-		strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "temporary failure") ||
-		strings.Contains(errStr, "resource temporarily unavailable")
-}
-
-func isDiskFullError(err error) bool {
-	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "no space left") ||
-		strings.Contains(errStr, "disk full") ||
-		strings.Contains(errStr, "not enough space")
 }
