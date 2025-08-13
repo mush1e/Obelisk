@@ -10,33 +10,10 @@ import (
 	"io"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/pkg/protocol"
 )
-
-// Global file pool instance used by all storage operations.
-// This is initialized once during application startup and shared
-// across all topics to minimize file handle overhead.
-var pool *FilePool
-
-// InitializePool creates and configures the global file pool.
-func InitializePool(idleTimeout time.Duration, cleanupInterval time.Duration) {
-	pool = NewFilePool(idleTimeout)
-	pool.StartCleanup(cleanupInterval)
-}
-
-// ShutdownPool closes all files in the pool.
-func ShutdownPool() error {
-	if pool != nil {
-		return pool.Stop()
-	}
-	return nil
-}
-
-// GetPool returns the global file pool instance.
-func GetPool() *FilePool { return pool }
 
 // OffsetIndex maps logical message offsets to byte positions for fast random access.
 type OffsetIndex struct {
@@ -124,7 +101,7 @@ func (idx *OffsetIndex) GetPosition(offset uint64) (int64, error) {
 }
 
 // AppendMessage appends a single message atomically and updates its index.
-func AppendMessage(logFile, idxFile string, msg message.Message, idx *OffsetIndex) error {
+func AppendMessage(pool *FilePool, logFile, idxFile string, msg message.Message, idx *OffsetIndex) error {
 	if pool == nil {
 		return errors.New("file pool not initialized")
 	}
@@ -150,7 +127,7 @@ func AppendMessage(logFile, idxFile string, msg message.Message, idx *OffsetInde
 }
 
 // AppendMessages performs batch append of multiple messages with index updates.
-func AppendMessages(logFile, idxFile string, msgs []message.Message, idx *OffsetIndex) error {
+func AppendMessages(pool *FilePool, logFile, idxFile string, msgs []message.Message, idx *OffsetIndex) error {
 	if pool == nil {
 		return errors.New("file pool not initialized")
 	}
@@ -179,27 +156,6 @@ func AppendMessages(logFile, idxFile string, msgs []message.Message, idx *Offset
 	}
 
 	return idx.AppendIndices(idxFile, positions)
-}
-
-// AppendMessageSimple appends a message without indexing.
-func AppendMessageSimple(logFile string, msg message.Message) error {
-	if pool == nil {
-		return errors.New("file pool not initialized")
-	}
-
-	f, err := pool.GetOrCreate(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
-	if err != nil {
-		return err
-	}
-
-	_, err = f.AppendWith(func(w io.Writer) error {
-		b, serr := message.Serialize(msg)
-		if serr != nil {
-			return serr
-		}
-		return protocol.WriteMessage(w, b)
-	})
-	return err
 }
 
 // ReadAllMessages reads all messages from a log file sequentially.

@@ -1,6 +1,5 @@
 package server
 
-
 import (
 	"context"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"github.com/mush1e/obelisk/internal/batch"
 	"github.com/mush1e/obelisk/internal/buffer"
 	"github.com/mush1e/obelisk/internal/services"
+	"github.com/mush1e/obelisk/internal/storage"
 )
 
 // Server orchestrates the complete Obelisk message broker infrastructure.
@@ -32,13 +32,17 @@ type Server struct {
 	httpServer   *HTTPServer
 	batcher      *batch.TopicBatcher
 	topicBuffers *buffer.TopicBuffers
+	pool         *storage.FilePool
 	wg           sync.WaitGroup
 }
 
 // NewServer creates a new server with TCP/HTTP addresses and storage path.
 func NewServer(tcpAddr, httpAddr, logFilePath string) *Server {
+	pool := storage.NewFilePool(time.Hour)
+	pool.StartCleanup(time.Minute * 2)
+
 	topicBuffers := buffer.NewTopicBuffers(100)
-	batcher := batch.NewTopicBatcher(logFilePath, 100, time.Second*5)
+	batcher := batch.NewTopicBatcher(logFilePath, 100, time.Second*5, pool)
 	brokerService := services.NewBrokerService(topicBuffers, batcher)
 	tcpServer := NewTCPServer(tcpAddr, brokerService)
 	httpServer := NewHTTPServer(httpAddr, brokerService)
@@ -48,6 +52,7 @@ func NewServer(tcpAddr, httpAddr, logFilePath string) *Server {
 		httpServer:   httpServer,
 		batcher:      batcher,
 		topicBuffers: topicBuffers,
+		pool:         pool,
 	}
 }
 
@@ -79,7 +84,11 @@ func (s *Server) Stop() {
 	s.httpServer.Stop(ctx)
 
 	s.batcher.Stop()
-	s.wg.Wait()
 
+	if err := s.pool.Stop(); err != nil {
+		fmt.Printf("Error shutting down file pool: %v\n", err)
+	}
+
+	s.wg.Wait()
 	fmt.Println("Server stopped")
 }

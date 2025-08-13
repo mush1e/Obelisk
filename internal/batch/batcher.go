@@ -32,6 +32,7 @@ type TopicBatcher struct {
 	baseDir string
 	maxSize uint32
 	maxWait time.Duration
+	pool    *storage.FilePool
 	quit    chan struct{}
 	mtx     sync.RWMutex
 	wg      sync.WaitGroup
@@ -47,12 +48,13 @@ type TopicBatch struct {
 }
 
 // NewTopicBatcher creates a new topic batcher.
-func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration) *TopicBatcher {
+func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration, pool *storage.FilePool) *TopicBatcher {
 	return &TopicBatcher{
 		batches: make(map[string]*TopicBatch),
 		baseDir: baseDir,
 		maxSize: maxSize,
 		maxWait: maxWait,
+		pool:    pool,
 		quit:    make(chan struct{}),
 	}
 }
@@ -209,7 +211,7 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 	batch.buffer = batch.buffer[:0]
 	batch.mtx.Unlock()
 
-	if err := storage.AppendMessages(batch.logFile, batch.idxFile, local, batch.index); err != nil {
+	if err := storage.AppendMessages(tb.pool, batch.logFile, batch.idxFile, local, batch.index); err != nil {
 		// Re-queue messages on failure
 		batch.mtx.Lock()
 		batch.buffer = append(local, batch.buffer...)
