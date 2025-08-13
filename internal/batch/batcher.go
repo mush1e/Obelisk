@@ -152,22 +152,21 @@ func (tb *TopicBatcher) createTopicBatch(topic string) *TopicBatch {
 }
 
 // AddMessage adds a message to its topic batch. Triggers flush when full.
+// FIX - fixed race condition for now but messages will be processed serially
+// TODO - will look into topic wise batching soon
 func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 
 	tb.mtx.Lock()
+	defer tb.mtx.Unlock()
 	batch, exists := tb.batches[msg.Topic]
 	if !exists {
-
 		batch = tb.createTopicBatch(msg.Topic)
 		tb.batches[msg.Topic] = batch
 	}
-	tb.mtx.Unlock()
 
-	batch.mtx.Lock()
 	batch.buffer = append(batch.buffer, msg)
 	bufLen := len(batch.buffer)
 	shouldFlush := bufLen >= int(tb.maxSize)
-	batch.mtx.Unlock()
 
 	if shouldFlush {
 		return tb.flushTopic(batch)
