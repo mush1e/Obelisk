@@ -4,6 +4,7 @@ package batch
 // and flushes them to persistent storage in batches.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -13,7 +14,10 @@ import (
 	"time"
 
 	"github.com/mush1e/obelisk/internal/message"
+	"github.com/mush1e/obelisk/internal/retry"
 	"github.com/mush1e/obelisk/internal/storage"
+
+	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
 )
 
 // TopicBatcher manages batching per topic and flushes them to disk.
@@ -211,13 +215,32 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 	batch.buffer = batch.buffer[:0]
 	batch.mtx.Unlock()
 
-	if err := storage.AppendMessages(tb.pool, batch.logFile, batch.idxFile, local, batch.index); err != nil {
-		// Re-queue messages on failure
-		batch.mtx.Lock()
-		batch.buffer = append(local, batch.buffer...)
-		batch.mtx.Unlock()
-		return err
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := retry.Retry(ctx, retry.DefaultConfig(), func() error {
+		if err := storage.AppendMessages(tb.pool, batch.logFile, batch.idxFile, local, batch.index); err != nil {
+			if isTemporaryStorageError(err) {
+				return obeliskErrors.NewTransientError("flush_batch", "temporary storage failure", err)
+			}
+			if isDiskFullError(err) {
+				return obeliskErrors.NewResourceError("flush_batch", "disk space exhausted", err)
+			}
+			return obeliskErrors.NewPermanentError("flush_batch", "storage operation failed", err)
+		}
+		return nil
+	})
+
+	if err != nil {
+		if obeliskErrors.IsRetryable(err) {
+			batch.mtx.Lock()
+			batch.buffer = append(local, batch.buffer...)
+			batch.mtx.Unlock()
+		} else {
+			fmt.Printf("[BATCHER] CRITICAL: Dropping %d messages - %s\n", len(local), err.Error())
+		}
 	}
+
 	return nil
 }
 
@@ -237,4 +260,19 @@ func (tb *TopicBatcher) GetTopicStats(topic string) (int, int64, error) {
 	batch.mtx.Unlock()
 
 	return buffered, total, nil
+}
+
+func isTemporaryStorageError(err error) bool {
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "temporary failure") ||
+		strings.Contains(errStr, "resource temporarily unavailable")
+}
+
+func isDiskFullError(err error) bool {
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "no space left") ||
+		strings.Contains(errStr, "disk full") ||
+		strings.Contains(errStr, "not enough space")
 }

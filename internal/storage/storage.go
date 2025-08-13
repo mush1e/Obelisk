@@ -6,11 +6,12 @@ package storage
 import (
 	"bufio"
 	"encoding/binary"
-	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
 
+	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/pkg/protocol"
 )
@@ -28,9 +29,9 @@ func LoadIndex(path string) (*OffsetIndex, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return idx, nil
+			return idx, nil // Empty index for new topics
 		}
-		return nil, err
+		return nil, categorizeFileError("load_index", err)
 	}
 	defer f.Close()
 
@@ -40,7 +41,7 @@ func LoadIndex(path string) (*OffsetIndex, error) {
 			if err == io.EOF {
 				break
 			}
-			return nil, err
+			return nil, categorizeDataError("read_index_entry", err)
 		}
 		idx.Positions = append(idx.Positions, pos)
 	}
@@ -48,19 +49,18 @@ func LoadIndex(path string) (*OffsetIndex, error) {
 }
 
 // AppendIndex appends a position to the index file and in-memory structure.
-// TODO: Consider using file pool for index files.
 func (idx *OffsetIndex) AppendIndex(path string, pos int64) error {
 	idx.mtx.Lock()
 	defer idx.mtx.Unlock()
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return err
+		return categorizeFileError("open_index_for_append", err)
 	}
 	defer f.Close()
 
 	if err := binary.Write(f, binary.LittleEndian, pos); err != nil {
-		return err
+		return categorizeFileError("write_index_entry", err)
 	}
 
 	idx.Positions = append(idx.Positions, pos)
@@ -68,20 +68,19 @@ func (idx *OffsetIndex) AppendIndex(path string, pos int64) error {
 }
 
 // AppendIndices appends multiple positions atomically to the index file.
-// TODO: Consider using file pool for index files.
 func (idx *OffsetIndex) AppendIndices(path string, poses []int64) error {
 	idx.mtx.Lock()
 	defer idx.mtx.Unlock()
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return err
+		return categorizeFileError("open_index_for_batch_append", err)
 	}
 	defer f.Close()
 
-	for _, p := range poses {
+	for i, p := range poses {
 		if err := binary.Write(f, binary.LittleEndian, p); err != nil {
-			return err
+			return categorizeFileError(fmt.Sprintf("write_index_entry_%d", i), err)
 		}
 	}
 
@@ -95,7 +94,7 @@ func (idx *OffsetIndex) GetPosition(offset uint64) (int64, error) {
 	defer idx.mtx.RUnlock()
 
 	if int(offset) >= len(idx.Positions) {
-		return 0, io.EOF
+		return 0, obeliskErrors.NewPermanentError("get_position", "offset beyond end of index", nil)
 	}
 	return idx.Positions[offset], nil
 }
@@ -103,45 +102,50 @@ func (idx *OffsetIndex) GetPosition(offset uint64) (int64, error) {
 // AppendMessage appends a single message atomically and updates its index.
 func AppendMessage(pool *FilePool, logFile, idxFile string, msg message.Message, idx *OffsetIndex) error {
 	if pool == nil {
-		return errors.New("file pool not initialized")
+		return obeliskErrors.NewConfigurationError("append_message", "file pool not initialized", nil)
 	}
 
 	msgBin, err := message.Serialize(msg)
 	if err != nil {
-		return err
+		return obeliskErrors.NewPermanentError("serialize_message", "failed to serialize message", err)
 	}
 
 	f, err := pool.GetOrCreate(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 	if err != nil {
-		return err
+		return categorizePoolError("get_file_for_append", err)
 	}
 
 	pos, err := f.AppendWith(func(w io.Writer) error {
 		return protocol.WriteMessage(w, msgBin)
 	})
 	if err != nil {
-		return err
+		return categorizeFileError("write_message_to_file", err)
 	}
 
-	return idx.AppendIndex(idxFile, pos)
+	if err := idx.AppendIndex(idxFile, pos); err != nil {
+		return err // Already categorized by AppendIndex
+	}
+
+	return nil
 }
 
 // AppendMessages performs batch append of multiple messages with index updates.
 func AppendMessages(pool *FilePool, logFile, idxFile string, msgs []message.Message, idx *OffsetIndex) error {
 	if pool == nil {
-		return errors.New("file pool not initialized")
+		return obeliskErrors.NewConfigurationError("append_messages", "file pool not initialized", nil)
 	}
 
 	f, err := pool.GetOrCreate(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 	if err != nil {
-		return err
+		return categorizePoolError("get_file_from_pool", err)
 	}
 
 	bins := make([][]byte, 0, len(msgs))
-	for _, m := range msgs {
+	for i, m := range msgs {
 		b, err := message.Serialize(m)
 		if err != nil {
-			return err
+			return obeliskErrors.NewPermanentError("serialize_message",
+				fmt.Sprintf("failed to serialize message %d", i), err)
 		}
 		bins = append(bins, b)
 	}
@@ -152,10 +156,14 @@ func AppendMessages(pool *FilePool, logFile, idxFile string, msgs []message.Mess
 
 	_, positions, err := f.AppendBatch(bins, writeProto)
 	if err != nil {
-		return err
+		return categorizeFileError("write_batch_to_file", err)
 	}
 
-	return idx.AppendIndices(idxFile, positions)
+	if err := idx.AppendIndices(idxFile, positions); err != nil {
+		return err // Already categorized by AppendIndices
+	}
+
+	return nil
 }
 
 // ReadAllMessages reads all messages from a log file sequentially.
@@ -164,25 +172,24 @@ func ReadAllMessages(logFile string) ([]message.Message, error) {
 
 	f, err := os.Open(logFile)
 	if err != nil {
-		return nil, err
+		return nil, categorizeFileError("open_log_file", err)
 	}
 	defer f.Close()
 
 	r := bufio.NewReader(f)
 
 	for {
-
 		msgBytes, err := protocol.ReadMessage(r)
 		if err != nil {
 			if err == io.EOF {
-				break
+				break // Normal end of file
 			}
-			return nil, err
+			return nil, categorizeDataError("read_message_protocol", err)
 		}
 
 		m, err := message.Deserialize(msgBytes)
 		if err != nil {
-			return nil, err
+			return nil, categorizeDataError("deserialize_message", err)
 		}
 		messages = append(messages, m)
 	}
@@ -191,46 +198,44 @@ func ReadAllMessages(logFile string) ([]message.Message, error) {
 
 // ReadMessagesFromOffset reads messages starting from a specific logical offset.
 func ReadMessagesFromOffset(logFile, idxFile string, offset uint64) ([]message.Message, error) {
-
 	idx, err := LoadIndex(idxFile)
 	if err != nil {
-		return nil, err
+		return nil, err // Already categorized by LoadIndex
 	}
 
 	if int(offset) >= len(idx.Positions) {
-		return []message.Message{}, nil
+		return []message.Message{}, nil // No error for valid but empty result
 	}
 
 	pos, err := idx.GetPosition(offset)
 	if err != nil {
-		return nil, err
+		return nil, err // Already categorized by GetPosition
 	}
 
 	f, err := os.Open(logFile)
 	if err != nil {
-		return nil, err
+		return nil, categorizeFileError("open_log_file_for_offset", err)
 	}
 	defer f.Close()
 
 	if _, err := f.Seek(pos, io.SeekStart); err != nil {
-		return nil, err
+		return nil, categorizeFileError("seek_to_offset_position", err)
 	}
 
 	r := bufio.NewReader(f)
 	var messages []message.Message
 	for {
-
 		msgBytes, err := protocol.ReadMessage(r)
 		if err != nil {
 			if err == io.EOF {
-				break
+				break // Normal end of file
 			}
-			return nil, err
+			return nil, categorizeDataError("read_message_from_offset", err)
 		}
 
 		m, err := message.Deserialize(msgBytes)
 		if err != nil {
-			return nil, err
+			return nil, categorizeDataError("deserialize_message_from_offset", err)
 		}
 		messages = append(messages, m)
 	}
@@ -241,7 +246,7 @@ func ReadMessagesFromOffset(logFile, idxFile string, offset uint64) ([]message.M
 func GetTopicMessageCount(idxFile string) (int64, error) {
 	idx, err := LoadIndex(idxFile)
 	if err != nil {
-		return 0, err
+		return 0, err // Already categorized by LoadIndex
 	}
 	return int64(len(idx.Positions)), nil
 }

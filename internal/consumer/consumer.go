@@ -3,11 +3,16 @@ package consumer
 // Consumer implementation with per-topic offset tracking and subscription management.
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/mush1e/obelisk/internal/message"
+	"github.com/mush1e/obelisk/internal/retry"
 	"github.com/mush1e/obelisk/internal/storage"
+
+	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
 )
 
 // Consumer represents a consumer instance for the Obelisk message broker.
@@ -48,13 +53,33 @@ func (c *Consumer) Poll(topic string) ([]message.Message, error) {
 	logFile := filepath.Join(c.baseDir, topic+".log")
 	idxFile := filepath.Join(c.baseDir, topic+".idx")
 
-	// Handle initial read (offset 0) - read all available messages
-	if offset == 0 {
-		return storage.ReadAllMessages(logFile)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	// Read messages starting from specific offset using index for efficient access
-	return storage.ReadMessagesFromOffset(logFile, idxFile, offset)
+	// Use closure to capture the messages
+	var messages []message.Message
+	var err error
+
+	if offset == 0 {
+		err = retry.Retry(ctx, retry.DefaultConfig(), func() error {
+			msgs, readErr := storage.ReadAllMessages(logFile)
+			if readErr != nil {
+				return obeliskErrors.NewTransientError("read_all_messages", "failed to read messages", readErr)
+			}
+			messages = msgs
+			return nil
+		})
+	} else {
+		err = retry.Retry(ctx, retry.DefaultConfig(), func() error {
+			msgs, readErr := storage.ReadMessagesFromOffset(logFile, idxFile, offset)
+			if readErr != nil {
+				return obeliskErrors.NewTransientError("read_messages_offset", "failed to read from offset", readErr)
+			}
+			messages = msgs
+			return nil
+		})
+	}
+	return messages, err
 }
 
 // Commit updates the consumer's offset for the specified topic after successful processing.
@@ -91,11 +116,22 @@ func (c *Consumer) GetCurrentOffset(topic string) (uint64, error) {
 
 // GetTopicMessageCount returns the total number of messages available in the specified topic.
 func (c *Consumer) GetTopicMessageCount(topic string) (int64, error) {
-	// Construct path to topic's index file
 	idxFile := filepath.Join(c.baseDir, topic+".idx")
 
-	// Delegate to storage layer for accurate count retrieval
-	return storage.GetTopicMessageCount(idxFile)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var count int64
+	err := retry.Retry(ctx, retry.DefaultConfig(), func() error {
+		cnt, readErr := storage.GetTopicMessageCount(idxFile)
+		if readErr != nil {
+			return obeliskErrors.NewTransientError("get_message_count", "failed to get count", readErr)
+		}
+		count = cnt
+		return nil
+	})
+
+	return count, err
 }
 
 // Reset resets the consumer's offset for the specified topic back to 0.
