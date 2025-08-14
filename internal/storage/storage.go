@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 
 	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
@@ -35,13 +36,24 @@ func LoadIndex(path string) (*OffsetIndex, error) {
 	}
 	defer f.Close()
 
+	// Try to load index
 	var pos int64
 	for {
 		if err := binary.Read(f, binary.LittleEndian, &pos); err != nil {
 			if err == io.EOF {
 				break
 			}
-			return nil, categorizeDataError("read_index_entry", err)
+			// Index corrupted! Try to rebuild
+			logFile := strings.TrimSuffix(path, ".idx") + ".log"
+			fmt.Printf("Index corrupted, attempting rebuild: %s\n", path)
+
+			if rebuildErr := RebuildIndex(logFile, path); rebuildErr != nil {
+				return nil, obeliskErrors.NewDataError("load_index",
+					"index corrupted and rebuild failed", rebuildErr)
+			}
+
+			// Retry loading the rebuilt index
+			return LoadIndex(path)
 		}
 		idx.Positions = append(idx.Positions, pos)
 	}
@@ -249,4 +261,68 @@ func GetTopicMessageCount(idxFile string) (int64, error) {
 		return 0, err // Already categorized by LoadIndex
 	}
 	return int64(len(idx.Positions)), nil
+}
+
+// RebuildIndex reconstructs the index file for a given log file by
+// scanning each message and recording its byte position.
+func RebuildIndex(logFile, idxFile string) error {
+	f, err := os.Open(logFile)
+	if err != nil {
+		return categorizeFileError("open_log_file_for_rebuild", err)
+	}
+	defer f.Close()
+
+	r := bufio.NewReader(f)
+	var positions []int64 // Collect positions first
+	var offset int64 = 0
+
+	for {
+		currentPos := offset
+
+		// Try to read message
+		msgBytes, err := protocol.ReadMessage(r)
+		if err != nil {
+			if err == io.EOF {
+				break // Normal end
+			}
+			// Log file corrupted - stop at last good message
+			fmt.Printf("Warning: Log file corrupted at offset %d, rebuilding partial index\n", offset)
+			break
+		}
+
+		// Message is valid, record its position
+		positions = append(positions, currentPos)
+
+		// Advance offset
+		offset += 4 + int64(len(msgBytes))
+	}
+
+	// Now write all valid positions atomically
+	tempFile := idxFile + ".tmp"
+	tmpF, err := os.Create(tempFile)
+	if err != nil {
+		return categorizeFileError("create_temp_index", err)
+	}
+
+	for _, pos := range positions {
+		if err := binary.Write(tmpF, binary.LittleEndian, pos); err != nil {
+			tmpF.Close()
+			os.Remove(tempFile) // Clean up on error
+			return categorizeFileError("write_index_entry", err)
+		}
+	}
+
+	if err := tmpF.Close(); err != nil {
+		os.Remove(tempFile)
+		return categorizeFileError("close_temp_index", err)
+	}
+
+	// Atomic rename
+	if err := os.Rename(tempFile, idxFile); err != nil {
+		os.Remove(tempFile)
+		return categorizeFileError("rename_index", err)
+	}
+
+	fmt.Printf("Index rebuilt: %d messages indexed\n", len(positions))
+	return nil
 }
