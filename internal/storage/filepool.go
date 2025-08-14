@@ -80,13 +80,15 @@ func (f *File) AppendWith(fn func(w io.Writer) error) (int64, error) {
 		return 0, err
 	}
 
-	bw := bufio.NewWriter(f.file)
-	if err := fn(bw); err != nil {
-		return 0, err
-	}
-	if err := bw.Flush(); err != nil {
-		return 0, err
-	}
+    bw := bufio.NewWriter(f.file)
+    if err := fn(bw); err != nil {
+        f.setDirty(true)
+        return 0, err
+    }
+    if err := bw.Flush(); err != nil {
+        f.setDirty(true)
+        return 0, err
+    }
 
 	// Sync to disk for durability
 	if err := f.file.Sync(); err != nil {
@@ -129,9 +131,10 @@ func (f *File) AppendBatch(msgBins [][]byte, writeProto func(w io.Writer, mb []b
 		bytesWritten += int64(tmp.Len())
 	}
 
-	if err := bw.Flush(); err != nil {
-		return 0, nil, err
-	}
+    if err := bw.Flush(); err != nil {
+        f.setDirty(true)
+        return 0, nil, err
+    }
 
 	if err := f.file.Sync(); err != nil {
 		f.setDirty(true)

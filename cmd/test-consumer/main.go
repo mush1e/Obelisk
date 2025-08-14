@@ -22,8 +22,8 @@ func main() {
 	fmt.Printf("Starting consumer '%s' for topic '%s'\n", *consumerID, *topic)
 	fmt.Printf("Reading from directory: %s\n", *baseDir)
 
-	// Create new consumer instance subscribed to the specified topic
-	consumer := consumer.NewConsumer(*baseDir, *topic)
+    // Create new consumer instance subscribed to the specified topic (with persisted offsets)
+    consumer := consumer.NewConsumer(*baseDir, *consumerID, *topic)
 
 	// Run the specified test mode
 	switch *mode {

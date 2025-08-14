@@ -5,19 +5,21 @@ package server
 // - Client acknowledgment responses to confirm message receipt
 
 import (
-	"bufio"
-	"context"
-	"fmt"
-	"net"
-	"sync"
-	"time"
+    "bufio"
+    "context"
+    "errors"
+    "fmt"
+    "io"
+    "net"
+    "sync"
+    "time"
 
-	"github.com/mush1e/obelisk/internal/message"
-	"github.com/mush1e/obelisk/internal/retry"
-	"github.com/mush1e/obelisk/internal/services"
-	"github.com/mush1e/obelisk/pkg/protocol"
+    "github.com/mush1e/obelisk/internal/message"
+    "github.com/mush1e/obelisk/internal/retry"
+    "github.com/mush1e/obelisk/internal/services"
+    "github.com/mush1e/obelisk/pkg/protocol"
 
-	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
+    obeliskErrors "github.com/mush1e/obelisk/internal/errors"
 )
 
 // TCPServer manages TCP connections and delegates message processing to handlers.
@@ -175,14 +177,14 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 					fmt.Printf("Protocol violation from %s: %v\n", conn.RemoteAddr(), err)
 					t.sendNack(writer, "PROTOCOL_ERROR")
 					return
-				default:
-					// EOF or other errors - disconnect
-					if err.Error() == "EOF" {
-						fmt.Println("Client disconnected:", conn.RemoteAddr())
-					} else {
-						fmt.Printf("Connection error from %s: %v\n", conn.RemoteAddr(), err)
-					}
-					return
+                default:
+                    // EOF or other errors - disconnect
+                    if errors.Is(err, io.EOF) {
+                        fmt.Println("Client disconnected:", conn.RemoteAddr())
+                    } else {
+                        fmt.Printf("Connection error from %s: %v\n", conn.RemoteAddr(), err)
+                    }
+                    return
 				}
 			}
 
