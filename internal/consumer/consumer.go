@@ -89,26 +89,37 @@ func (c *Consumer) loadOffsets() error {
 
 // saveOffsets persists the consumer's current offsets to disk
 func (c *Consumer) saveOffsets() error {
-	c.mtx.RLock()
-	data, err := json.MarshalIndent(c.subscribedTopics, "", "  ")
-	c.mtx.RUnlock()
+    c.mtx.RLock()
+    snapshot := make(map[string]uint64, len(c.subscribedTopics))
+    for topic, offset := range c.subscribedTopics {
+        snapshot[topic] = offset
+    }
+    c.mtx.RUnlock()
 
-	if err != nil {
-		return obeliskErrors.NewPermanentError("save_offsets", "failed to marshal offsets", err)
-	}
+    return c.saveOffsetsFromSnapshot(snapshot)
+}
 
-	// Write atomically using temp file + rename
-	tempFile := c.offsetFile + ".tmp"
-	if err := os.WriteFile(tempFile, data, 0644); err != nil {
-		return obeliskErrors.NewTransientError("save_offsets", "failed to write temp file", err)
-	}
+// saveOffsetsFromSnapshot persists the provided offsets map to disk without acquiring
+// any consumer locks. Callers should ensure they do not hold the consumer write lock
+// when invoking this function to avoid deadlocks.
+func (c *Consumer) saveOffsetsFromSnapshot(offsets map[string]uint64) error {
+    data, err := json.MarshalIndent(offsets, "", "  ")
+    if err != nil {
+        return obeliskErrors.NewPermanentError("save_offsets", "failed to marshal offsets", err)
+    }
 
-	// Atomic rename (on POSIX systems)
-	if err := os.Rename(tempFile, c.offsetFile); err != nil {
-		return obeliskErrors.NewTransientError("save_offsets", "failed to rename offset file", err)
-	}
+    // Write atomically using temp file + rename
+    tempFile := c.offsetFile + ".tmp"
+    if err := os.WriteFile(tempFile, data, 0644); err != nil {
+        return obeliskErrors.NewTransientError("save_offsets", "failed to write temp file", err)
+    }
 
-	return nil
+    // Atomic rename (on POSIX systems)
+    if err := os.Rename(tempFile, c.offsetFile); err != nil {
+        return obeliskErrors.NewTransientError("save_offsets", "failed to rename offset file", err)
+    }
+
+    return nil
 }
 
 // Poll retrieves new messages from the specified topic starting from the current offset.
@@ -156,46 +167,56 @@ func (c *Consumer) Poll(topic string) ([]message.Message, error) {
 
 // Commit updates the consumer's offset for the specified topic after successful processing.
 func (c *Consumer) Commit(topic string, offset uint64) error {
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
+    c.mtx.Lock()
+    if _, ok := c.subscribedTopics[topic]; !ok {
+        c.mtx.Unlock()
+        return obeliskErrors.NewPermanentError("commit", "not subscribed to topic",
+            fmt.Errorf("topic: %s", topic))
+    }
 
-	if _, ok := c.subscribedTopics[topic]; !ok {
-		return obeliskErrors.NewPermanentError("commit", "not subscribed to topic",
-			fmt.Errorf("topic: %s", topic))
-	}
+    // Update in-memory and take a snapshot while holding the write lock
+    c.subscribedTopics[topic] = offset
+    snapshot := make(map[string]uint64, len(c.subscribedTopics))
+    for t, off := range c.subscribedTopics {
+        snapshot[t] = off
+    }
+    c.mtx.Unlock()
 
-	// Update in-memory
-	c.subscribedTopics[topic] = offset
+    // Persist to disk outside the lock to avoid deadlocks
+    if err := c.saveOffsetsFromSnapshot(snapshot); err != nil {
+        fmt.Printf("Warning: failed to persist offset for consumer %s: %v\n", c.id, err)
+        return err
+    }
 
-	// Persist to disk immediately
-	// In production, you might batch these for performance
-	if err := c.saveOffsets(); err != nil {
-		// Log but don't fail - at least we have it in memory
-		fmt.Printf("Warning: failed to persist offset for consumer %s: %v\n", c.id, err)
-		return err
-	}
-
-	return nil
+    return nil
 }
 
 // Subscribe adds a new topic subscription
 func (c *Consumer) Subscribe(topic string) {
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
-
-	if _, exists := c.subscribedTopics[topic]; !exists {
-		c.subscribedTopics[topic] = 0
-		c.saveOffsets() // Persist the new subscription
-	}
+    c.mtx.Lock()
+    if _, exists := c.subscribedTopics[topic]; !exists {
+        c.subscribedTopics[topic] = 0
+        snapshot := make(map[string]uint64, len(c.subscribedTopics))
+        for t, off := range c.subscribedTopics {
+            snapshot[t] = off
+        }
+        c.mtx.Unlock()
+        _ = c.saveOffsetsFromSnapshot(snapshot)
+        return
+    }
+    c.mtx.Unlock()
 }
 
 // Unsubscribe removes a topic subscription
 func (c *Consumer) Unsubscribe(topic string) {
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
-
-	delete(c.subscribedTopics, topic)
-	c.saveOffsets() // Persist the removal
+    c.mtx.Lock()
+    delete(c.subscribedTopics, topic)
+    snapshot := make(map[string]uint64, len(c.subscribedTopics))
+    for t, off := range c.subscribedTopics {
+        snapshot[t] = off
+    }
+    c.mtx.Unlock()
+    _ = c.saveOffsetsFromSnapshot(snapshot)
 }
 
 // GetCurrentOffset returns the current offset for a topic
@@ -233,16 +254,20 @@ func (c *Consumer) GetTopicMessageCount(topic string) (int64, error) {
 
 // Reset resets the offset to 0 AND persists it
 func (c *Consumer) Reset(topic string) error {
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
+    c.mtx.Lock()
+    if _, ok := c.subscribedTopics[topic]; !ok {
+        c.mtx.Unlock()
+        return obeliskErrors.NewPermanentError("reset", "not subscribed to topic",
+            fmt.Errorf("topic: %s", topic))
+    }
 
-	if _, ok := c.subscribedTopics[topic]; !ok {
-		return obeliskErrors.NewPermanentError("reset", "not subscribed to topic",
-			fmt.Errorf("topic: %s", topic))
-	}
-
-	c.subscribedTopics[topic] = 0
-	return c.saveOffsets() // Persist the reset
+    c.subscribedTopics[topic] = 0
+    snapshot := make(map[string]uint64, len(c.subscribedTopics))
+    for t, off := range c.subscribedTopics {
+        snapshot[t] = off
+    }
+    c.mtx.Unlock()
+    return c.saveOffsetsFromSnapshot(snapshot) // Persist the reset
 }
 
 // GetConsumerID returns the consumer's unique identifier

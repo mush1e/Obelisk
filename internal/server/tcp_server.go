@@ -14,12 +14,12 @@ import (
     "sync"
     "time"
 
-    "github.com/mush1e/obelisk/internal/message"
-    "github.com/mush1e/obelisk/internal/retry"
-    "github.com/mush1e/obelisk/internal/services"
-    "github.com/mush1e/obelisk/pkg/protocol"
+	"github.com/mush1e/obelisk/internal/message"
+	"github.com/mush1e/obelisk/internal/retry"
+	"github.com/mush1e/obelisk/internal/services"
+	"github.com/mush1e/obelisk/pkg/protocol"
 
-    obeliskErrors "github.com/mush1e/obelisk/internal/errors"
+	obeliskErrors "github.com/mush1e/obelisk/internal/errors"
 )
 
 // TCPServer manages TCP connections and delegates message processing to handlers.

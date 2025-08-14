@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/mush1e/obelisk/internal/consumer"
@@ -13,26 +14,44 @@ import (
 // main connects to the Obelisk storage layer and runs the specified consumer test mode.
 // Use flags to configure topic, consumer ID, directory, and operation mode.
 func main() {
-	topic := flag.String("topic", "topic-0", "Topic to consume from")
+	topic := flag.String("topic", "", "Topic to consume from (deprecated, prefer -topics)")
+	topicsCSV := flag.String("topics", "topic-0", "Comma-separated list of topics to consume from")
 	consumerID := flag.String("id", "test-consumer", "Consumer ID")
 	baseDir := flag.String("dir", "data/topics", "Base directory for topic files")
 	mode := flag.String("mode", "poll", "Mode: poll, continuous, reset")
 	flag.Parse()
 
-	fmt.Printf("Starting consumer '%s' for topic '%s'\n", *consumerID, *topic)
+	// Determine topics
+	topics := []string{}
+	if *topicsCSV != "" {
+		for _, t := range strings.Split(*topicsCSV, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				topics = append(topics, t)
+			}
+		}
+	}
+	if len(topics) == 0 && *topic != "" {
+		topics = []string{*topic}
+	}
+	if len(topics) == 0 {
+		log.Fatal("no topics provided; use -topics=topic-0,topic-1 or -topic=topic-0")
+	}
+
+	fmt.Printf("Starting consumer '%s' for topics %v\n", *consumerID, topics)
 	fmt.Printf("Reading from directory: %s\n", *baseDir)
 
-    // Create new consumer instance subscribed to the specified topic (with persisted offsets)
-    consumer := consumer.NewConsumer(*baseDir, *consumerID, *topic)
+	// Create new consumer instance subscribed to the specified topics (with persisted offsets)
+	c := consumer.NewConsumer(*baseDir, *consumerID, topics...)
 
 	// Run the specified test mode
 	switch *mode {
 	case "poll":
-		testSinglePoll(consumer, *topic)
+		testSinglePoll(c, topics)
 	case "continuous":
-		testContinuousPolling(consumer, *topic)
+		testContinuousPolling(c, topics)
 	case "reset":
-		testResetAndPoll(consumer, *topic)
+		testResetAndPoll(c, topics)
 	default:
 		fmt.Println("Unknown mode. Use: poll, continuous, reset")
 	}
@@ -40,128 +59,126 @@ func main() {
 
 // testSinglePoll performs a single poll operation to retrieve all available messages
 // from the current offset and commits the new offset after processing.
-func testSinglePoll(c *consumer.Consumer, topic string) {
+func testSinglePoll(c *consumer.Consumer, topics []string) {
 	fmt.Println("\n=== Single Poll Test ===")
 
-	// Display current consumer state
-	offset, err := c.GetCurrentOffset(topic)
-	if err != nil {
-		log.Printf("Error getting offset: %v", err)
-		return
-	}
-	fmt.Printf("Current offset: %d\n", offset)
+	for _, topic := range topics {
+		fmt.Printf("\n-- Topic: %s --\n", topic)
 
-	// Show total messages available in the topic
-	total, err := c.GetTopicMessageCount(topic)
-	if err != nil {
-		log.Printf("Error getting message count: %v", err)
-	} else {
-		fmt.Printf("Total messages in topic: %d\n", total)
-	}
+		// Display current consumer state
+		offset, err := c.GetCurrentOffset(topic)
+		if err != nil {
+			log.Printf("Error getting offset for %s: %v", topic, err)
+			continue
+		}
+		fmt.Printf("Current offset: %d\n", offset)
 
-	// Poll for all messages from current offset
-	messages, err := c.Poll(topic)
-	if err != nil {
-		log.Printf("Error polling: %v", err)
-		return
-	}
-
-	fmt.Printf("Retrieved %d messages:\n", len(messages))
-	// Display retrieved messages with timestamp and content
-	for i, msg := range messages {
-		fmt.Printf("  %d. [%s] %s -> %s\n",
-			i+1,
-			msg.Timestamp.Format("15:04:05.000"),
-			msg.Key,
-			msg.Value)
-	}
-
-	if len(messages) > 0 {
-		// Update consumer offset to reflect processed messages
-		newOffset := offset + uint64(len(messages))
-		if err := c.Commit(topic, newOffset); err != nil {
-			log.Printf("Error committing: %v", err)
+		// Show total messages available in the topic
+		total, err := c.GetTopicMessageCount(topic)
+		if err != nil {
+			log.Printf("Error getting message count for %s: %v", topic, err)
 		} else {
-			fmt.Printf("Committed offset: %d\n", newOffset)
+			fmt.Printf("Total messages in topic: %d\n", total)
+		}
+
+		// Poll for all messages from current offset
+		messages, err := c.Poll(topic)
+		if err != nil {
+			log.Printf("Error polling %s: %v", topic, err)
+			continue
+		}
+
+		fmt.Printf("Retrieved %d messages:\n", len(messages))
+		for i, msg := range messages {
+			fmt.Printf("  %d. [%s] %s -> %s\n",
+				i+1,
+				msg.Timestamp.Format("15:04:05.000"),
+				msg.Key,
+				msg.Value)
+		}
+
+		if len(messages) > 0 {
+			newOffset := offset + uint64(len(messages))
+			if err := c.Commit(topic, newOffset); err != nil {
+				log.Printf("Error committing %s: %v", topic, err)
+			} else {
+				fmt.Printf("Committed offset: %d\n", newOffset)
+			}
 		}
 	}
 }
 
 // testContinuousPolling runs a continuous polling loop that checks for new messages
 // every 3 seconds and processes them as they arrive.
-func testContinuousPolling(c *consumer.Consumer, topic string) {
+func testContinuousPolling(c *consumer.Consumer, topics []string) {
 	fmt.Println("\n=== Continuous Polling Test ===")
 	fmt.Println("Polling every 3 seconds. Press Ctrl+C to stop...")
 
-	// Continuous polling loop
 	for {
-		offset, _ := c.GetCurrentOffset(topic)
-		fmt.Printf("\n[%s] Polling from offset %d...\n",
-			time.Now().Format("15:04:05"), offset)
+		for _, topic := range topics {
+			offset, _ := c.GetCurrentOffset(topic)
+			fmt.Printf("\n[%s] Polling %s from offset %d...\n",
+				time.Now().Format("15:04:05"), topic, offset)
 
-		messages, err := c.Poll(topic)
-		if err != nil {
-			log.Printf("Error polling: %v", err)
-			time.Sleep(3 * time.Second)
-			continue
-		}
-
-		if len(messages) == 0 {
-			fmt.Println("No new messages")
-		} else {
-			fmt.Printf("Got %d new messages:\n", len(messages))
-			for i, msg := range messages {
-				fmt.Printf("  %d. %s -> %s\n", i+1, msg.Key, msg.Value)
+			messages, err := c.Poll(topic)
+			if err != nil {
+				log.Printf("Error polling %s: %v", topic, err)
+				continue
 			}
 
-			// Commit offset after successfully processing messages
-			newOffset := offset + uint64(len(messages))
-			if err := c.Commit(topic, newOffset); err != nil {
-				log.Printf("Error committing: %v", err)
+			if len(messages) == 0 {
+				fmt.Println("No new messages")
 			} else {
-				fmt.Printf("Committed offset: %d\n", newOffset)
+				fmt.Printf("Got %d new messages:\n", len(messages))
+				for i, msg := range messages {
+					fmt.Printf("  %d. %s -> %s\n", i+1, msg.Key, msg.Value)
+				}
+
+				newOffset := offset + uint64(len(messages))
+				if err := c.Commit(topic, newOffset); err != nil {
+					log.Printf("Error committing %s: %v", topic, err)
+				} else {
+					fmt.Printf("Committed offset: %d\n", newOffset)
+				}
 			}
 		}
-
 		time.Sleep(3 * time.Second)
 	}
 }
 
 // testResetAndPoll demonstrates resetting the consumer offset to 0 and reading
 // all messages from the beginning of the topic.
-func testResetAndPoll(c *consumer.Consumer, topic string) {
+func testResetAndPoll(c *consumer.Consumer, topics []string) {
 	fmt.Println("\n=== Reset and Poll Test ===")
 
-	// Display current consumer state before reset
-	offset, _ := c.GetCurrentOffset(topic)
-	fmt.Printf("Current offset: %d\n", offset)
+	for _, topic := range topics {
+		fmt.Printf("\n-- Topic: %s --\n", topic)
+		offset, _ := c.GetCurrentOffset(topic)
+		fmt.Printf("Current offset: %d\n", offset)
 
-	// Reset consumer offset to start from beginning
-	if err := c.Reset(topic); err != nil {
-		log.Printf("Error resetting: %v", err)
-		return
-	}
-	fmt.Println("Reset consumer to offset 0")
+		if err := c.Reset(topic); err != nil {
+			log.Printf("Error resetting %s: %v", topic, err)
+			continue
+		}
+		fmt.Println("Reset consumer to offset 0")
 
-	// Poll all messages from the beginning of the topic
-	messages, err := c.Poll(topic)
-	if err != nil {
-		log.Printf("Error polling: %v", err)
-		return
-	}
+		messages, err := c.Poll(topic)
+		if err != nil {
+			log.Printf("Error polling %s: %v", topic, err)
+			continue
+		}
 
-	fmt.Printf("Retrieved %d messages from beginning:\n", len(messages))
-	// Show first few messages to avoid overwhelming output
-	for i, msg := range messages[:min(5, len(messages))] {
-		fmt.Printf("  %d. [%s] %s -> %s\n",
-			i+1,
-			msg.Timestamp.Format("15:04:05.000"),
-			msg.Key,
-			msg.Value)
-	}
-
-	if len(messages) > 5 {
-		fmt.Printf("  ... and %d more messages\n", len(messages)-5)
+		fmt.Printf("Retrieved %d messages from beginning:\n", len(messages))
+		for i, msg := range messages[:min(5, len(messages))] {
+			fmt.Printf("  %d. [%s] %s -> %s\n",
+				i+1,
+				msg.Timestamp.Format("15:04:05.000"),
+				msg.Key,
+				msg.Value)
+		}
+		if len(messages) > 5 {
+			fmt.Printf("  ... and %d more messages\n", len(messages)-5)
+		}
 	}
 }
 
