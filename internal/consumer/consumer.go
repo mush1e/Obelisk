@@ -5,7 +5,9 @@ package consumer
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/mush1e/obelisk/internal/message"
@@ -24,20 +26,27 @@ import (
 // The consumer operates in a stateful manner, remembering where it left off
 // Consumer manages topic subscriptions and tracks per-topic offsets.
 type Consumer struct {
-	subscribedTopics map[string]uint64
-	baseDir          string
+	id               string            // Unique consumer identifier
+	subscribedTopics map[string]uint64 // Topic -> Current Offset
+	baseDir          string            // Base directory for topics
+	offsetFile       string            // Path to this consumer's offset file
+	mtx              sync.RWMutex      // Protects offset operations
 }
 
 // NewConsumer creates a new consumer subscribed to the specified topics.
-func NewConsumer(baseDir string, topics ...string) *Consumer {
+func NewConsumer(baseDir, consumerID string, topics ...string) *Consumer {
+	consumersDir := filepath.Join(baseDir, "../consumers")
+	os.MkdirAll(consumersDir, 0755)
+
+	offsetFile := filepath.Join(consumersDir, fmt.Sprintf("%s.json", consumerID))
+
 	c := &Consumer{
+		id:               consumerID,
 		subscribedTopics: make(map[string]uint64),
 		baseDir:          baseDir,
+		offsetFile:       offsetFile,
 	}
 
-	for _, t := range topics {
-		c.subscribedTopics[t] = 0
-	}
 	return c
 }
 
