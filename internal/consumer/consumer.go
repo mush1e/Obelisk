@@ -4,6 +4,7 @@ package consumer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,26 +48,86 @@ func NewConsumer(baseDir, consumerID string, topics ...string) *Consumer {
 		offsetFile:       offsetFile,
 	}
 
+	// Load existing offsets from disk
+	if err := c.loadOffsets(); err != nil {
+		fmt.Printf("Consumer %s: no existing offsets found, starting fresh\n", consumerID)
+	}
+
+	// Subscribe to requested topics
+	for _, t := range topics {
+		if _, exists := c.subscribedTopics[t]; !exists {
+			c.subscribedTopics[t] = 0 // Start from beginning if new
+		}
+	}
+
+	// Save initial state
+	c.saveOffsets()
+
 	return c
+}
+
+// loadOffsets reads the consumer's offsets from disk
+func (c *Consumer) loadOffsets() error {
+	data, err := os.ReadFile(c.offsetFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return err // Normal for new consumers
+		}
+		return obeliskErrors.NewPermanentError("load_offsets", "failed to read offset file", err)
+	}
+
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+
+	if err := json.Unmarshal(data, &c.subscribedTopics); err != nil {
+		return obeliskErrors.NewDataError("load_offsets", "invalid offset file format", err)
+	}
+
+	fmt.Printf("Consumer %s: loaded offsets for %d topics\n", c.id, len(c.subscribedTopics))
+	return nil
+}
+
+// saveOffsets persists the consumer's current offsets to disk
+func (c *Consumer) saveOffsets() error {
+	c.mtx.RLock()
+	data, err := json.MarshalIndent(c.subscribedTopics, "", "  ")
+	c.mtx.RUnlock()
+
+	if err != nil {
+		return obeliskErrors.NewPermanentError("save_offsets", "failed to marshal offsets", err)
+	}
+
+	// Write atomically using temp file + rename
+	tempFile := c.offsetFile + ".tmp"
+	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+		return obeliskErrors.NewTransientError("save_offsets", "failed to write temp file", err)
+	}
+
+	// Atomic rename (on POSIX systems)
+	if err := os.Rename(tempFile, c.offsetFile); err != nil {
+		return obeliskErrors.NewTransientError("save_offsets", "failed to rename offset file", err)
+	}
+
+	return nil
 }
 
 // Poll retrieves new messages from the specified topic starting from the current offset.
 func (c *Consumer) Poll(topic string) ([]message.Message, error) {
-	// Check if consumer is subscribed to the requested topic
+	c.mtx.RLock()
 	offset, subscribed := c.subscribedTopics[topic]
+	c.mtx.RUnlock()
+
 	if !subscribed {
 		return nil, obeliskErrors.NewPermanentError("poll", "not subscribed to topic",
 			fmt.Errorf("topic: %s", topic))
 	}
 
-	// Construct file paths for topic storage files
 	logFile := filepath.Join(c.baseDir, topic+".log")
 	idxFile := filepath.Join(c.baseDir, topic+".idx")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Use closure to capture the messages
 	var messages []message.Message
 	var err error
 
@@ -89,35 +150,59 @@ func (c *Consumer) Poll(topic string) ([]message.Message, error) {
 			return nil
 		})
 	}
+
 	return messages, err
 }
 
 // Commit updates the consumer's offset for the specified topic after successful processing.
 func (c *Consumer) Commit(topic string, offset uint64) error {
-	// Verify subscription exists before updating offset
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+
 	if _, ok := c.subscribedTopics[topic]; !ok {
 		return obeliskErrors.NewPermanentError("commit", "not subscribed to topic",
 			fmt.Errorf("topic: %s", topic))
 	}
 
-	// Update in-memory offset tracking
+	// Update in-memory
 	c.subscribedTopics[topic] = offset
+
+	// Persist to disk immediately
+	// In production, you might batch these for performance
+	if err := c.saveOffsets(); err != nil {
+		// Log but don't fail - at least we have it in memory
+		fmt.Printf("Warning: failed to persist offset for consumer %s: %v\n", c.id, err)
+		return err
+	}
+
 	return nil
 }
 
-// Subscribe adds a new topic subscription to the consumer.
-
+// Subscribe adds a new topic subscription
 func (c *Consumer) Subscribe(topic string) {
-	c.subscribedTopics[topic] = 0 // Start from beginning for new subscriptions
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+
+	if _, exists := c.subscribedTopics[topic]; !exists {
+		c.subscribedTopics[topic] = 0
+		c.saveOffsets() // Persist the new subscription
+	}
 }
 
-// Unsubscribe removes a topic subscription from the consumer.
+// Unsubscribe removes a topic subscription
 func (c *Consumer) Unsubscribe(topic string) {
-	delete(c.subscribedTopics, topic) // Remove topic and its offset information
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+
+	delete(c.subscribedTopics, topic)
+	c.saveOffsets() // Persist the removal
 }
 
-// GetCurrentOffset returns the current offset position for the specified topic.
+// GetCurrentOffset returns the current offset for a topic
 func (c *Consumer) GetCurrentOffset(topic string) (uint64, error) {
+	c.mtx.RLock()
+	defer c.mtx.RUnlock()
+
 	offset, subscribed := c.subscribedTopics[topic]
 	if !subscribed {
 		return 0, obeliskErrors.NewPermanentError("get_offset", "not subscribed to topic",
@@ -126,7 +211,7 @@ func (c *Consumer) GetCurrentOffset(topic string) (uint64, error) {
 	return offset, nil
 }
 
-// GetTopicMessageCount returns the total number of messages available in the specified topic.
+// GetTopicMessageCount returns total messages in a topic
 func (c *Consumer) GetTopicMessageCount(topic string) (int64, error) {
 	idxFile := filepath.Join(c.baseDir, topic+".idx")
 
@@ -146,15 +231,21 @@ func (c *Consumer) GetTopicMessageCount(topic string) (int64, error) {
 	return count, err
 }
 
-// Reset resets the consumer's offset for the specified topic back to 0.
+// Reset resets the offset to 0 AND persists it
 func (c *Consumer) Reset(topic string) error {
-	// Verify subscription exists before resetting offset
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+
 	if _, ok := c.subscribedTopics[topic]; !ok {
 		return obeliskErrors.NewPermanentError("reset", "not subscribed to topic",
 			fmt.Errorf("topic: %s", topic))
 	}
 
-	// Reset offset to beginning of topic
 	c.subscribedTopics[topic] = 0
-	return nil
+	return c.saveOffsets() // Persist the reset
+}
+
+// GetConsumerID returns the consumer's unique identifier
+func (c *Consumer) GetConsumerID() string {
+	return c.id
 }
