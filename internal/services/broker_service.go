@@ -4,6 +4,7 @@ import (
 	"github.com/mush1e/obelisk/internal/batch"
 	"github.com/mush1e/obelisk/internal/buffer"
 	"github.com/mush1e/obelisk/internal/message"
+	"github.com/mush1e/obelisk/internal/metrics"
 )
 
 type BrokerService struct {
@@ -20,14 +21,37 @@ func NewBrokerService(buffers *buffer.TopicBuffers, batcher *batch.TopicBatcher)
 
 // PublishMessage saves a message (used by both TCP and HTTP!)
 func (s *BrokerService) PublishMessage(msg *message.Message) error {
+	// 📊 Track message received
+	metrics.Metrics.MessagesReceived.WithLabelValues(msg.Topic).Inc()
+
 	// Save to memory for fast access
-	s.buffers.Push(*msg)
+	if err := s.buffers.Push(*msg); err != nil {
+		// Track buffer failures
+		metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "buffer_full").Inc()
+		// Continue to storage even if buffer fails
+	}
 
 	// Save to disk for permanent storage
-	return s.batcher.AddMessage(*msg)
+	err := s.batcher.AddMessage(*msg)
+	if err != nil {
+		// 📊 Track storage failures
+		metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "storage_error").Inc()
+		return err
+	}
+
+	// 📊 Track successful storage
+	metrics.Metrics.MessagesStored.WithLabelValues(msg.Topic).Inc()
+	return nil
 }
 
 // GetTopicStats gets statistics about a topic
 func (s *BrokerService) GetTopicStats(topic string) (int, int64, error) {
-	return s.batcher.GetTopicStats(topic)
+	buffered, persisted, err := s.batcher.GetTopicStats(topic)
+
+	if err == nil {
+		// 📊 Update buffer size metric
+		metrics.Metrics.BufferSize.WithLabelValues(topic).Set(float64(buffered))
+	}
+
+	return buffered, persisted, err
 }

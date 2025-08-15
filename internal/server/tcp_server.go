@@ -5,16 +5,17 @@ package server
 // - Client acknowledgment responses to confirm message receipt
 
 import (
-    "bufio"
-    "context"
-    "errors"
-    "fmt"
-    "io"
-    "net"
-    "sync"
-    "time"
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"sync"
+	"time"
 
 	"github.com/mush1e/obelisk/internal/message"
+	"github.com/mush1e/obelisk/internal/metrics"
 	"github.com/mush1e/obelisk/internal/retry"
 	"github.com/mush1e/obelisk/internal/services"
 	"github.com/mush1e/obelisk/pkg/protocol"
@@ -107,24 +108,25 @@ func (t *TCPServer) acceptLoop() {
 	defer t.wg.Done()
 
 	for {
-		// Accept new client connection (blocks until connection or error)
 		conn, err := t.listener.Accept()
 		if err != nil {
 			select {
 			case <-t.quit:
-				// Shutdown was signaled - exit accept loop gracefully
 				return
 			default:
-				// Unexpected error during accept - log and continue
+				// Track connection errors
+				metrics.Metrics.ConnectionErrors.WithLabelValues("accept_error").Inc()
 				fmt.Println("Accept error:", err)
 				continue
 			}
 		}
 
-		// Log new connection for operational visibility
+		// Track new connections
+		metrics.Metrics.ConnectionsTotal.Inc()
+		metrics.Metrics.ActiveConnections.Inc()
+
 		fmt.Println("New client connected:", conn.RemoteAddr())
 
-		// Spawn goroutine to handle this client connection
 		t.wg.Add(1)
 		go t.handleConnection(conn)
 	}
@@ -134,6 +136,7 @@ func (t *TCPServer) acceptLoop() {
 func (t *TCPServer) handleConnection(conn net.Conn) {
 	defer t.wg.Done()
 	defer conn.Close()
+	defer metrics.Metrics.ActiveConnections.Dec() // Track disconnection
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
@@ -157,39 +160,37 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 
 			msgBytes, err := protocol.ReadMessage(reader)
 			if err != nil {
-				// Check if it's a retryable error
-				if obeliskErrors.IsRetryable(err) {
-					// Log and continue for transient errors
-					fmt.Printf("Transient error from %s: %v\n", conn.RemoteAddr(), err)
-					continue
-				}
-
-				// Handle specific error types
-				switch obeliskErrors.GetErrorType(err) {
-				case obeliskErrors.ErrorTypeData:
-					// Data corruption - log and continue
+				// Handle errors with metrics tracking
+				switch {
+				case errors.Is(err, io.EOF):
+					// Normal disconnection - no error metric
+					fmt.Println("Client disconnected:", conn.RemoteAddr())
+					return
+				case obeliskErrors.GetErrorType(err) == obeliskErrors.ErrorTypeData:
+					metrics.Metrics.ConnectionErrors.WithLabelValues("data_corruption").Inc()
 					fmt.Printf("Corrupted message from %s: %v\n", conn.RemoteAddr(), err)
-					// Send NACK to client
 					t.sendNack(writer, "CORRUPTED")
 					continue
-				case obeliskErrors.ErrorTypePermanent:
-					// Permanent error - close connection
+				case obeliskErrors.GetErrorType(err) == obeliskErrors.ErrorTypePermanent:
+					metrics.Metrics.ConnectionErrors.WithLabelValues("protocol_violation").Inc()
 					fmt.Printf("Protocol violation from %s: %v\n", conn.RemoteAddr(), err)
 					t.sendNack(writer, "PROTOCOL_ERROR")
 					return
-                default:
-                    // EOF or other errors - disconnect
-                    if errors.Is(err, io.EOF) {
-                        fmt.Println("Client disconnected:", conn.RemoteAddr())
-                    } else {
-                        fmt.Printf("Connection error from %s: %v\n", conn.RemoteAddr(), err)
-                    }
-                    return
+				case obeliskErrors.IsRetryable(err):
+					metrics.Metrics.ConnectionErrors.WithLabelValues("transient_error").Inc()
+					fmt.Printf("Transient error from %s: %v\n", conn.RemoteAddr(), err)
+					continue
+				default:
+					metrics.Metrics.ConnectionErrors.WithLabelValues("network_error").Inc()
+					fmt.Printf("Connection error from %s: %v\n", conn.RemoteAddr(), err)
+					return
 				}
 			}
 
 			msg, err := message.Deserialize(msgBytes)
 			if err != nil {
+				// Track deserialization errors
+				metrics.Metrics.ConnectionErrors.WithLabelValues("invalid_message").Inc()
 				fmt.Printf("Invalid message format from %s: %v\n", conn.RemoteAddr(), err)
 				t.sendNack(writer, "INVALID_FORMAT")
 				continue
@@ -203,6 +204,8 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 			cancel()
 
 			if err != nil {
+				// Track publish failures
+				metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "publish_failed").Inc()
 				fmt.Printf("Failed to publish message: %v\n", err)
 				t.sendNack(writer, "PUBLISH_FAILED")
 				continue
@@ -219,6 +222,8 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 			cancel()
 
 			if err != nil {
+				// Track acknowledgment failures
+				metrics.Metrics.ConnectionErrors.WithLabelValues("ack_failed").Inc()
 				fmt.Printf("Failed to send acknowledgment: %v\n", err)
 				// Connection might be broken, exit handler
 				return

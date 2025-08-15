@@ -11,6 +11,7 @@ import (
 
 	"github.com/mush1e/obelisk/internal/handlers"
 	"github.com/mush1e/obelisk/internal/services"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // HTTPServer provides a REST API interface for the Obelisk message broker.
@@ -24,6 +25,7 @@ import (
 // - Standardized REST API responses with proper HTTP status codes
 // - Middleware-based request processing for logging and error handling
 // - Graceful shutdown capabilities for clean service termination
+// - Prometheus metrics endpoint for monitoring
 type HTTPServer struct {
 	srv *http.Server // Underlying Go HTTP server instance with configured routes and middleware
 }
@@ -43,6 +45,9 @@ func NewHTTPServer(addr string, brokerService *services.BrokerService) *HTTPServ
 
 	// Topics POST endpoint to send topic based messages
 	mux.Handle("POST /topics/{topic}/messages", handlers.PostMessageHandler(brokerService))
+
+	// 📊 Prometheus metrics endpoint
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	return &HTTPServer{
 		srv: &http.Server{

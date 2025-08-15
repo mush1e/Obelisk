@@ -157,9 +157,6 @@ func (tb *TopicBatcher) createTopicBatch(topic string) *TopicBatch {
 }
 
 // AddMessage adds a message to its topic batch. Triggers flush when full.
-// FIX - fixed race condition for now but messages will be processed serially
-// TODO - will look into topic wise batching soon
-// FIX - lock per topic, not globally
 func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 	// Cheap check
 	tb.mtx.RLock()
