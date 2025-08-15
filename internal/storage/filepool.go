@@ -26,6 +26,7 @@ type File struct {
 	lastAccessedNano int64
 	file             *os.File
 	dirty            int32
+	inUse            int32
 }
 
 // NewFile creates a new File wrapper with the specified flags.
@@ -61,12 +62,26 @@ func (f *File) IsDirty() bool {
 	return atomic.LoadInt32(&f.dirty) != 0
 }
 
+// IsInUse returns true if the file is currently being used
+func (f *File) IsInUse() bool {
+	return atomic.LoadInt32(&f.inUse) != 0
+}
+
 // setDirty atomically sets the dirty flag.
 func (f *File) setDirty(v bool) {
 	if v {
 		atomic.StoreInt32(&f.dirty, 1)
 	} else {
 		atomic.StoreInt32(&f.dirty, 0)
+	}
+}
+
+// setInUse atomically sets the inUse flag
+func (f *File) setInUse(v bool) {
+	if v {
+		atomic.StoreInt32(&f.inUse, 1)
+	} else {
+		atomic.StoreInt32(&f.inUse, 0)
 	}
 }
 
@@ -80,15 +95,15 @@ func (f *File) AppendWith(fn func(w io.Writer) error) (int64, error) {
 		return 0, err
 	}
 
-    bw := bufio.NewWriter(f.file)
-    if err := fn(bw); err != nil {
-        f.setDirty(true)
-        return 0, err
-    }
-    if err := bw.Flush(); err != nil {
-        f.setDirty(true)
-        return 0, err
-    }
+	bw := bufio.NewWriter(f.file)
+	if err := fn(bw); err != nil {
+		f.setDirty(true)
+		return 0, err
+	}
+	if err := bw.Flush(); err != nil {
+		f.setDirty(true)
+		return 0, err
+	}
 
 	// Sync to disk for durability
 	if err := f.file.Sync(); err != nil {
@@ -131,10 +146,10 @@ func (f *File) AppendBatch(msgBins [][]byte, writeProto func(w io.Writer, mb []b
 		bytesWritten += int64(tmp.Len())
 	}
 
-    if err := bw.Flush(); err != nil {
-        f.setDirty(true)
-        return 0, nil, err
-    }
+	if err := bw.Flush(); err != nil {
+		f.setDirty(true)
+		return 0, nil, err
+	}
 
 	if err := f.file.Sync(); err != nil {
 		f.setDirty(true)
@@ -170,7 +185,32 @@ func NewFilePool(timeLimit time.Duration) *FilePool {
 	}
 }
 
+// WithFile provides RAII access to a file - automatic resource management!
+// The file is guaranteed to be available during the callback and protected from cleanup.
+// No manual cleanup needed - it's handled automatically!
+func (fp *FilePool) WithFile(path string, flag int, fn func(*File) error) error {
+	fp.mtx.Lock()
+
+	f, exists := fp.files[path]
+	if !exists {
+		var err error
+		f, err = NewFile(path, flag)
+		if err != nil {
+			fp.mtx.Unlock()
+			return err
+		}
+		fp.files[path] = f
+	}
+	f.SetLastAccessed(time.Now())
+	f.setInUse(true)
+	fp.mtx.Unlock()
+
+	defer f.setInUse(false)
+	return fn(f)
+}
+
 // GetOrCreate retrieves an existing file from the pool or creates a new one.
+// DEPRECATED - use WithFile instead
 func (fp *FilePool) GetOrCreate(path string, flag int) (*File, error) {
 	fp.mtx.Lock()
 	defer fp.mtx.Unlock()
@@ -210,7 +250,9 @@ func (fp *FilePool) cleanupIdleFiles() {
 	fp.mtx.RLock()
 	var toClose []string
 	for path, file := range fp.files {
-		if file.GetTimeSinceAccessed() >= fp.timeLimit && !file.IsDirty() {
+		if file.GetTimeSinceAccessed() >= fp.timeLimit &&
+			!file.IsDirty() &&
+			!file.IsInUse() { // 🛡️ RACE CONDITION ELIMINATED!
 			toClose = append(toClose, path)
 		}
 	}

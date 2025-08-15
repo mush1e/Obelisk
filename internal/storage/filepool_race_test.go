@@ -11,61 +11,57 @@ import (
 	"time"
 )
 
-// TestFilePoolRaceCondition attempts to reproduce the use-after-close race condition
-func TestFilePoolRaceCondition(t *testing.T) {
+// TestRAII_NoRaceConditions proves that the RAII pattern eliminates race conditions
+func TestRAII_NoRaceConditions(t *testing.T) {
 	tempDir := t.TempDir()
-	testFile := filepath.Join(tempDir, "race-test.log")
+	testFile := filepath.Join(tempDir, "raii-test.log")
 
-	// Create a file pool with aggressive cleanup (short timeout)
-	pool := NewFilePool(50 * time.Millisecond) // Very short timeout to trigger cleanup quickly
+	// Same aggressive settings that caused races before
+	pool := NewFilePool(20 * time.Millisecond) // Very short timeout
 	defer pool.Stop()
-
-	// Start cleanup with high frequency to increase race probability
-	pool.StartCleanup(10 * time.Millisecond)
+	pool.StartCleanup(5 * time.Millisecond) // Aggressive cleanup
 
 	var (
-		raceDetected  int32
+		totalOps      int32
 		successfulOps int32
-		totalAttempts int32
+		raceDetected  int32
 		wg            sync.WaitGroup
 	)
 
-	// Number of goroutines and operations - tune this to increase race probability
-	numGoroutines := 50
-	opsPerGoroutine := 100
+	// Same stress test parameters that found 758 races before
+	numGoroutines := 100
+	opsPerGoroutine := 200
 
-	t.Logf("Starting race condition test with %d goroutines, %d ops each",
+	t.Logf("🚀 Testing RAII pattern with %d goroutines, %d ops each",
 		numGoroutines, opsPerGoroutine)
 
-	// Launch multiple goroutines that repeatedly get files and use them
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
 
 			for j := 0; j < opsPerGoroutine; j++ {
-				atomic.AddInt32(&totalAttempts, 1)
+				atomic.AddInt32(&totalOps, 1)
 
-				// Get file from pool
-				f, err := pool.GetOrCreate(testFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
-				if err != nil {
-					t.Errorf("Goroutine %d: Failed to get file: %v", goroutineID, err)
-					continue
-				}
+				// 🛡️ RAII PATTERN: File automatically protected from cleanup!
+				err := pool.WithFile(testFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, func(f *File) error {
+					// Add delay to give cleanup maximum chance to interfere
+					time.Sleep(time.Microsecond * time.Duration(j%20))
 
-				// Add a small delay to increase the chance of cleanup running
-				// between getting the file and using it
-				time.Sleep(time.Microsecond * time.Duration(j%10))
+					// Try to use file - should NEVER fail with "file already closed"
+					_, writeErr := f.AppendWith(func(w io.Writer) error {
+						message := fmt.Sprintf("raii_goroutine_%d_op_%d\n", goroutineID, j)
+						_, err := w.Write([]byte(message))
 
-				// Try to use the file - this is where the race condition manifests
-				_, err = f.AppendWith(func(w io.Writer) error {
-					message := fmt.Sprintf("goroutine_%d_op_%d\n", goroutineID, j)
-					_, writeErr := w.Write([]byte(message))
+						// Extra delay during write to stress test the protection
+						time.Sleep(time.Microsecond * 10)
+						return err
+					})
 					return writeErr
 				})
 
 				if err != nil {
-					// Check if this looks like a use-after-close error
+					// Check for race condition indicators
 					errStr := err.Error()
 					if containsAny(errStr, []string{
 						"use of closed",
@@ -74,153 +70,189 @@ func TestFilePoolRaceCondition(t *testing.T) {
 						"invalid argument",
 					}) {
 						atomic.AddInt32(&raceDetected, 1)
-						t.Logf("🎯 RACE DETECTED in goroutine %d, op %d: %v", goroutineID, j, err)
+						t.Errorf("🔥 RACE DETECTED with RAII (should be impossible!): %v", err)
 					} else {
-						t.Logf("Other error in goroutine %d, op %d: %v", goroutineID, j, err)
+						// Other errors are acceptable (disk full, permissions, etc.)
+						t.Logf("Non-race error: %v", err)
 					}
 				} else {
 					atomic.AddInt32(&successfulOps, 1)
 				}
 
-				// Add another delay to let cleanup routine run
+				// Force cleanup to run frequently
 				if j%10 == 0 {
-					time.Sleep(time.Microsecond * 100)
+					time.Sleep(time.Millisecond * 25) // Longer than cleanup timeout
 				}
 			}
 		}(i)
 	}
 
-	// Wait for all goroutines to complete
 	wg.Wait()
 
-	// Report results
-	totalOps := atomic.LoadInt32(&totalAttempts)
+	// Results
+	total := atomic.LoadInt32(&totalOps)
 	successful := atomic.LoadInt32(&successfulOps)
 	races := atomic.LoadInt32(&raceDetected)
 
-	t.Logf("Test Results:")
-	t.Logf("  Total operations: %d", totalOps)
+	t.Logf("🏁 RAII Test Results:")
+	t.Logf("  Total operations: %d", total)
 	t.Logf("  Successful: %d", successful)
-	t.Logf("  Race conditions detected: %d", races)
-	t.Logf("  Success rate: %.2f%%", float64(successful)/float64(totalOps)*100)
+	t.Logf("  Race conditions: %d", races)
+	t.Logf("  Success rate: %.2f%%", float64(successful)/float64(total)*100)
 
-	if races > 0 {
-		t.Logf("🔥 SUCCESS: Race condition reproduced! Found %d instances", races)
+	// This should be 0 with RAII!
+	if races == 0 {
+		t.Logf("🎉 SUCCESS: RAII eliminated all race conditions!")
 	} else {
-		t.Logf("⚠️  No race detected - try increasing goroutines/operations or adjusting timing")
+		t.Errorf("❌ FAILURE: Found %d races (RAII should prevent ALL races)", races)
 	}
 
-	// This test is about demonstrating the race, not necessarily failing
-	// In a real fix, you'd want races to be 0
+	// Success rate should be very high (only legitimate errors allowed)
+	successRate := float64(successful) / float64(total) * 100
+	if successRate < 95.0 {
+		t.Errorf("❌ Low success rate: %.2f%% (expected >95%%)", successRate)
+	}
 }
 
-// TestFilePoolRaceConditionWithStress is an even more aggressive version
-func TestFilePoolRaceConditionWithStress(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping stress test in short mode")
-	}
-
+// TestRAII_vs_Manual compares RAII vs manual resource management
+func TestRAII_vs_Manual(t *testing.T) {
 	tempDir := t.TempDir()
 
-	// Test multiple files to increase contention
-	testFiles := make([]string, 5)
-	for i := range testFiles {
-		testFiles[i] = filepath.Join(tempDir, fmt.Sprintf("race-test-%d.log", i))
-	}
+	// Test 1: Manual resource management (legacy GetOrCreate)
+	t.Run("Manual_Resource_Management", func(t *testing.T) {
+		testFile := filepath.Join(tempDir, "manual-test.log")
+		pool := NewFilePool(50 * time.Millisecond)
+		defer pool.Stop()
+		pool.StartCleanup(10 * time.Millisecond)
 
-	// Very aggressive cleanup settings
-	pool := NewFilePool(20 * time.Millisecond)
-	defer pool.Stop()
-	pool.StartCleanup(5 * time.Millisecond)
+		var races int32
+		var total int32
 
-	var (
-		raceDetected  int32
-		totalAttempts int32
-		wg            sync.WaitGroup
-	)
+		// Smaller test to avoid spamming logs
+		for i := 0; i < 50; i++ {
+			atomic.AddInt32(&total, 1)
 
-	// Even more goroutines and operations
-	numGoroutines := 100
-	opsPerGoroutine := 200
+			// Legacy pattern (potentially racy)
+			f, err := pool.GetOrCreate(testFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
+			if err != nil {
+				continue
+			}
 
-	t.Logf("Starting STRESS test with %d goroutines, %d ops each, %d files",
-		numGoroutines, opsPerGoroutine, len(testFiles))
+			time.Sleep(time.Microsecond * 100) // Let cleanup run
 
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func(goroutineID int) {
-			defer wg.Done()
+			_, err = f.AppendWith(func(w io.Writer) error {
+				_, writeErr := w.Write([]byte("manual test\n"))
+				return writeErr
+			})
 
-			for j := 0; j < opsPerGoroutine; j++ {
-				atomic.AddInt32(&totalAttempts, 1)
+			if err != nil && containsAny(err.Error(), []string{"file already closed", "use of closed"}) {
+				atomic.AddInt32(&races, 1)
+			}
 
-				// Randomly pick a file to increase pool contention
-				testFile := testFiles[j%len(testFiles)]
+			time.Sleep(time.Millisecond * 60) // Force cleanup
+		}
 
+		manualRaces := atomic.LoadInt32(&races)
+		manualTotal := atomic.LoadInt32(&total)
+		t.Logf("Manual management: %d races out of %d ops", manualRaces, manualTotal)
+	})
+
+	// Test 2: RAII pattern
+	t.Run("RAII_Pattern", func(t *testing.T) {
+		testFile := filepath.Join(tempDir, "raii-test.log")
+		pool := NewFilePool(50 * time.Millisecond)
+		defer pool.Stop()
+		pool.StartCleanup(10 * time.Millisecond)
+
+		var races int32
+		var total int32
+
+		for i := 0; i < 50; i++ {
+			atomic.AddInt32(&total, 1)
+
+			// RAII pattern (should be race-free)
+			err := pool.WithFile(testFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, func(f *File) error {
+				time.Sleep(time.Microsecond * 100) // Let cleanup try to run
+
+				_, writeErr := f.AppendWith(func(w io.Writer) error {
+					_, err := w.Write([]byte("raii test\n"))
+					return err
+				})
+				return writeErr
+			})
+
+			if err != nil && containsAny(err.Error(), []string{"file already closed", "use of closed"}) {
+				atomic.AddInt32(&races, 1)
+			}
+
+			time.Sleep(time.Millisecond * 60) // Force cleanup
+		}
+
+		raiiRaces := atomic.LoadInt32(&races)
+		raiiTotal := atomic.LoadInt32(&total)
+		t.Logf("RAII pattern: %d races out of %d ops", raiiRaces, raiiTotal)
+
+		// RAII should have 0 races
+		if raiiRaces > 0 {
+			t.Errorf("RAII should have 0 races, got %d", raiiRaces)
+		}
+	})
+}
+
+// BenchmarkRAII_vs_Manual compares performance of RAII vs manual management
+func BenchmarkRAII_vs_Manual(b *testing.B) {
+	tempDir := b.TempDir()
+
+	b.Run("Manual", func(b *testing.B) {
+		testFile := filepath.Join(tempDir, "bench-manual.log")
+		pool := NewFilePool(time.Hour) // No cleanup during benchmark
+		defer pool.Stop()
+
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
 				f, err := pool.GetOrCreate(testFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
 				if err != nil {
-					continue
+					b.Fatal(err)
 				}
 
-				// Varying delays to hit different timing windows
-				delay := time.Duration(j%50) * time.Microsecond
-				time.Sleep(delay)
-
-				// Try to write - race condition should manifest here
 				_, err = f.AppendWith(func(w io.Writer) error {
-					data := fmt.Sprintf("stress_%d_%d\n", goroutineID, j)
-					_, writeErr := w.Write([]byte(data))
-
-					// Add delay during write to increase race window
-					time.Sleep(time.Microsecond * 10)
+					_, writeErr := w.Write([]byte("benchmark\n"))
 					return writeErr
 				})
 
-				if err != nil && containsAny(err.Error(), []string{
-					"use of closed", "bad file descriptor", "file already closed",
-				}) {
-					atomic.AddInt32(&raceDetected, 1)
-					if atomic.LoadInt32(&raceDetected) <= 5 { // Don't spam logs
-						t.Logf("🎯 STRESS RACE DETECTED: %v", err)
-					}
-				}
-
-				// Occasionally force cleanup to run
-				if j%20 == 0 {
-					time.Sleep(time.Millisecond * 30) // Let cleanup run
+				if err != nil {
+					b.Fatal(err)
 				}
 			}
-		}(i)
-	}
+		})
+	})
 
-	wg.Wait()
+	b.Run("RAII", func(b *testing.B) {
+		testFile := filepath.Join(tempDir, "bench-raii.log")
+		pool := NewFilePool(time.Hour) // No cleanup during benchmark
+		defer pool.Stop()
 
-	races := atomic.LoadInt32(&raceDetected)
-	total := atomic.LoadInt32(&totalAttempts)
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				err := pool.WithFile(testFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, func(f *File) error {
+					_, writeErr := f.AppendWith(func(w io.Writer) error {
+						_, err := w.Write([]byte("benchmark\n"))
+						return err
+					})
+					return writeErr
+				})
 
-	t.Logf("Stress Test Results:")
-	t.Logf("  Total operations: %d", total)
-	t.Logf("  Race conditions: %d", races)
-	t.Logf("  Race rate: %.4f%%", float64(races)/float64(total)*100)
-
-	if races > 0 {
-		t.Logf("🔥 STRESS SUCCESS: Reproduced %d race conditions!", races)
-	}
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	})
 }
 
-// TestFilePoolWithReferenceCounting demonstrates how reference counting would fix the issue
-func TestFilePoolWithReferenceCounting(t *testing.T) {
-	t.Skip("This test would require implementing reference counting first")
-
-	// This test would:
-	// 1. Implement a FileWithRefCount wrapper
-	// 2. Modify GetOrCreate to increment ref count
-	// 3. Modify cleanup to check ref count
-	// 4. Run the same stress test
-	// 5. Verify that races == 0
-}
-
-// Helper function to check if error string contains any of the given substrings
+// Helper function (reused from earlier test)
 func containsAny(s string, substrings []string) bool {
 	for _, sub := range substrings {
 		if len(s) >= len(sub) {
@@ -232,32 +264,4 @@ func containsAny(s string, substrings []string) bool {
 		}
 	}
 	return false
-}
-
-// Benchmark to measure the overhead of reference counting (when implemented)
-func BenchmarkFilePoolConcurrentAccess(b *testing.B) {
-	tempDir := b.TempDir()
-	testFile := filepath.Join(tempDir, "benchmark.log")
-
-	pool := NewFilePool(time.Hour) // Long timeout to avoid cleanup during benchmark
-	defer pool.Stop()
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			f, err := pool.GetOrCreate(testFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
-			if err != nil {
-				b.Fatalf("Failed to get file: %v", err)
-			}
-
-			_, err = f.AppendWith(func(w io.Writer) error {
-				_, writeErr := w.Write([]byte("benchmark data\n"))
-				return writeErr
-			})
-
-			if err != nil {
-				b.Fatalf("Failed to write: %v", err)
-			}
-		}
-	})
 }

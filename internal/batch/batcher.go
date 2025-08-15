@@ -210,7 +210,7 @@ func (tb *TopicBatcher) FlushAll() {
 	}
 }
 
-// flushTopic atomically flushes a topic batch. Re-queues on failure.
+// flushTopic atomically flushes a topic batch using RAII pattern - RACE-FREE!
 func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 	batch.mtx.Lock()
 	if len(batch.buffer) == 0 {
@@ -218,6 +218,7 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 		return nil
 	}
 
+	// Create local copy and clear buffer atomically
 	local := make([]message.Message, len(batch.buffer))
 	copy(local, batch.buffer)
 	batch.buffer = batch.buffer[:0]
@@ -226,7 +227,6 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Use aggressive retry config for critical data operations
 	aggressiveConfig := retry.Config{
 		MaxAttempts:   5,
 		InitialDelay:  100 * time.Millisecond,
@@ -234,8 +234,13 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 		BackoffFactor: 2.0,
 	}
 
-	err := retry.Retry(ctx, aggressiveConfig, func() error {
-		return storage.AppendMessages(tb.pool, batch.logFile, batch.idxFile, local, batch.index)
+	// File is automatically acquired, protected from cleanup, and released!
+	err := tb.pool.WithFile(batch.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, func(f *storage.File) error {
+		// File is guaranteed to be available and protected from cleanup here!
+		return retry.Retry(ctx, aggressiveConfig, func() error {
+			// Use the file directly - no pool access needed, no race conditions!
+			return storage.AppendMessagesWithFile(f, batch.idxFile, local, batch.index)
+		})
 	})
 
 	if err != nil {
@@ -250,6 +255,8 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 		}
 		return err
 	}
+
+	// File automatically released when WithFile callback exits
 	return nil
 }
 

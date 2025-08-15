@@ -142,23 +142,21 @@ func AppendMessage(pool *FilePool, logFile, idxFile string, msg message.Message,
 		return obeliskErrors.NewPermanentError("serialize_message", "failed to serialize message", err)
 	}
 
-	f, err := pool.GetOrCreate(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
-	if err != nil {
-		return categorizePoolError("get_file_for_append", err)
-	}
+	// RAII: File automatically protected from cleanup during callback
+	return pool.WithFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, func(f *File) error {
+		pos, err := f.AppendWith(func(w io.Writer) error {
+			return protocol.WriteMessage(w, msgBin)
+		})
+		if err != nil {
+			return categorizeFileError("write_message_to_file", err)
+		}
 
-	pos, err := f.AppendWith(func(w io.Writer) error {
-		return protocol.WriteMessage(w, msgBin)
+		if err := idx.AppendIndex(idxFile, pos); err != nil {
+			return err // Already categorized by AppendIndex
+		}
+
+		return nil
 	})
-	if err != nil {
-		return categorizeFileError("write_message_to_file", err)
-	}
-
-	if err := idx.AppendIndex(idxFile, pos); err != nil {
-		return err // Already categorized by AppendIndex
-	}
-
-	return nil
 }
 
 // AppendMessages performs batch append of multiple messages with index updates.
@@ -167,11 +165,7 @@ func AppendMessages(pool *FilePool, logFile, idxFile string, msgs []message.Mess
 		return obeliskErrors.NewConfigurationError("append_messages", "file pool not initialized", nil)
 	}
 
-	f, err := pool.GetOrCreate(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
-	if err != nil {
-		return categorizePoolError("get_file_from_pool", err)
-	}
-
+	// Pre-serialize all messages
 	bins := make([][]byte, 0, len(msgs))
 	for i, m := range msgs {
 		b, err := message.Serialize(m)
@@ -186,16 +180,19 @@ func AppendMessages(pool *FilePool, logFile, idxFile string, msgs []message.Mess
 		return protocol.WriteMessage(w, mb)
 	}
 
-	_, positions, err := f.AppendBatch(bins, writeProto)
-	if err != nil {
-		return categorizeFileError("write_batch_to_file", err)
-	}
+	// RAII: File automatically protected from cleanup during callback
+	return pool.WithFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, func(f *File) error {
+		_, positions, err := f.AppendBatch(bins, writeProto)
+		if err != nil {
+			return categorizeFileError("write_batch_to_file", err)
+		}
 
-	if err := idx.AppendIndices(idxFile, positions); err != nil {
-		return err // Already categorized by AppendIndices
-	}
+		if err := idx.AppendIndices(idxFile, positions); err != nil {
+			return err // Already categorized by AppendIndices
+		}
 
-	return nil
+		return nil
+	})
 }
 
 // ReadAllMessages reads all messages from a log file sequentially.
@@ -226,6 +223,35 @@ func ReadAllMessages(logFile string) ([]message.Message, error) {
 		messages = append(messages, m)
 	}
 	return messages, nil
+}
+
+// AppendMessagesWithFile performs batch append using an already-acquired file handle
+// This is for cases where you already have a file from WithFile
+func AppendMessagesWithFile(logFile *File, idxFile string, msgs []message.Message, idx *OffsetIndex) error {
+	bins := make([][]byte, 0, len(msgs))
+	for i, m := range msgs {
+		b, err := message.Serialize(m)
+		if err != nil {
+			return obeliskErrors.NewPermanentError("serialize_message",
+				fmt.Sprintf("failed to serialize message %d", i), err)
+		}
+		bins = append(bins, b)
+	}
+
+	writeProto := func(w io.Writer, mb []byte) error {
+		return protocol.WriteMessage(w, mb)
+	}
+
+	_, positions, err := logFile.AppendBatch(bins, writeProto)
+	if err != nil {
+		return categorizeFileError("write_batch_to_file", err)
+	}
+
+	if err := idx.AppendIndices(idxFile, positions); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // ReadMessagesFromOffset reads messages starting from a specific logical offset.
@@ -322,81 +348,81 @@ func recoverMessagesWithSkipping(f *os.File) ([]int64, RecoveryStats) {
 	// Create a buffered reader for efficient scanning
 	r := bufio.NewReader(f)
 
-    for {
-        // Remember where we are in case we find a valid message
-        currentPos := offset
+	for {
+		// Remember where we are in case we find a valid message
+		currentPos := offset
 
-        // Try to read message at current position
-        msgBytes, err := protocol.ReadMessage(r)
-        if err != nil {
-            if err == io.EOF {
-                break // Normal end of file - we're done
-            }
+		// Try to read message at current position
+		msgBytes, err := protocol.ReadMessage(r)
+		if err != nil {
+			if err == io.EOF {
+				break // Normal end of file - we're done
+			}
 
-            // Corruption detected - try to skip to next valid message
-            fmt.Printf("Corruption at offset %d, attempting recovery...\n", offset)
-            stats.corruptionSections++
+			// Corruption detected - try to skip to next valid message
+			fmt.Printf("Corruption at offset %d, attempting recovery...\n", offset)
+			stats.corruptionSections++
 
-            // Try to find the next valid message
-            skipResult := skipToNextValidMessage(f, &offset)
-            if skipResult.found {
-                stats.bytesSkipped += skipResult.bytesSkipped
-                fmt.Printf("Resumed scanning at offset %d (skipped %d bytes)\n",
-                    offset, skipResult.bytesSkipped)
+			// Try to find the next valid message
+			skipResult := skipToNextValidMessage(f, &offset)
+			if skipResult.found {
+				stats.bytesSkipped += skipResult.bytesSkipped
+				fmt.Printf("Resumed scanning at offset %d (skipped %d bytes)\n",
+					offset, skipResult.bytesSkipped)
 
-                // Create new reader from the recovery position
-                if _, err := f.Seek(offset, io.SeekStart); err != nil {
-                    break // Can't seek, give up
-                }
-                r = bufio.NewReader(f)
-                continue // Try again from new position
-            } else {
-                fmt.Printf("Could not find valid messages after corruption, stopping\n")
-                break // Could not recover
-            }
-        }
+				// Create new reader from the recovery position
+				if _, err := f.Seek(offset, io.SeekStart); err != nil {
+					break // Can't seek, give up
+				}
+				r = bufio.NewReader(f)
+				continue // Try again from new position
+			} else {
+				fmt.Printf("Could not find valid messages after corruption, stopping\n")
+				break // Could not recover
+			}
+		}
 
-        // Validate deserialization to ensure the frame actually contains a valid message schema
-        if _, deserErr := message.Deserialize(msgBytes); deserErr != nil {
-            // Treat schema-invalid frame as corruption and attempt recovery from here
-            fmt.Printf("Schema-invalid frame at offset %d, attempting recovery...\n", currentPos)
-            stats.corruptionSections++
+		// Validate deserialization to ensure the frame actually contains a valid message schema
+		if _, deserErr := message.Deserialize(msgBytes); deserErr != nil {
+			// Treat schema-invalid frame as corruption and attempt recovery from here
+			fmt.Printf("Schema-invalid frame at offset %d, attempting recovery...\n", currentPos)
+			stats.corruptionSections++
 
-            // Reset file position to currentPos for skip search baseline
-            offset = currentPos
-            skipResult := skipToNextValidMessage(f, &offset)
-            if skipResult.found {
-                stats.bytesSkipped += skipResult.bytesSkipped
-                fmt.Printf("Resumed scanning at offset %d (skipped %d bytes)\n",
-                    offset, skipResult.bytesSkipped)
-                if _, err := f.Seek(offset, io.SeekStart); err != nil {
-                    break
-                }
-                r = bufio.NewReader(f)
-                continue
-            }
-            fmt.Printf("Could not recover after schema-invalid frame, stopping\n")
-            break
-        }
+			// Reset file position to currentPos for skip search baseline
+			offset = currentPos
+			skipResult := skipToNextValidMessage(f, &offset)
+			if skipResult.found {
+				stats.bytesSkipped += skipResult.bytesSkipped
+				fmt.Printf("Resumed scanning at offset %d (skipped %d bytes)\n",
+					offset, skipResult.bytesSkipped)
+				if _, err := f.Seek(offset, io.SeekStart); err != nil {
+					break
+				}
+				r = bufio.NewReader(f)
+				continue
+			}
+			fmt.Printf("Could not recover after schema-invalid frame, stopping\n")
+			break
+		}
 
-        // Message is valid, record its position
-        positions = append(positions, currentPos)
-        stats.validMessages++
+		// Message is valid, record its position
+		positions = append(positions, currentPos)
+		stats.validMessages++
 
-        // Advance offset for next message (4-byte length + message data)
-        offset += 4 + int64(len(msgBytes))
-    }
+		// Advance offset for next message (4-byte length + message data)
+		offset += 4 + int64(len(msgBytes))
+	}
 
 	return positions, stats
 }
 
 // skipToNextValidMessage attempts to find the next valid message after corruption
 func skipToNextValidMessage(f *os.File, currentOffset *int64) SkipResult {
-    startOffset := *currentOffset
-    buffer := make([]byte, recoveryScanWindowSize)
+	startOffset := *currentOffset
+	buffer := make([]byte, recoveryScanWindowSize)
 
 	// Scan forward looking for a valid message pattern
-    for bytesSkipped := int64(0); bytesSkipped < recoveryMaxSkipBytes; bytesSkipped += int64(recoveryScanWindowSize) {
+	for bytesSkipped := int64(0); bytesSkipped < recoveryMaxSkipBytes; bytesSkipped += int64(recoveryScanWindowSize) {
 		// Calculate position to scan
 		scanPos := startOffset + bytesSkipped
 
@@ -406,7 +432,7 @@ func skipToNextValidMessage(f *os.File, currentOffset *int64) SkipResult {
 		}
 
 		// Read a chunk to scan for message patterns
-        n, err := f.Read(buffer)
+		n, err := f.Read(buffer)
 		if err != nil {
 			if err == io.EOF {
 				return SkipResult{found: false, bytesSkipped: bytesSkipped}
@@ -415,7 +441,7 @@ func skipToNextValidMessage(f *os.File, currentOffset *int64) SkipResult {
 		}
 
 		// Look for potential message start patterns in this chunk
-        for i := 0; i < n-4; i++ { // Need at least 4 bytes for length
+		for i := 0; i < n-4; i++ { // Need at least 4 bytes for length
 			candidatePos := scanPos + int64(i)
 
 			// Extract potential message length from these 4 bytes
@@ -451,7 +477,7 @@ func skipToNextValidMessage(f *os.File, currentOffset *int64) SkipResult {
 	}
 
 	// Couldn't find valid message within our search limit
-    return SkipResult{found: false, bytesSkipped: recoveryMaxSkipBytes}
+	return SkipResult{found: false, bytesSkipped: recoveryMaxSkipBytes}
 }
 
 // writeIndexFile atomically writes positions to index file
