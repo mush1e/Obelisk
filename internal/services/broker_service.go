@@ -3,19 +3,22 @@ package services
 import (
 	"github.com/mush1e/obelisk/internal/batch"
 	"github.com/mush1e/obelisk/internal/buffer"
+	"github.com/mush1e/obelisk/internal/health"
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/internal/metrics"
 )
 
 type BrokerService struct {
-	buffers *buffer.TopicBuffers
-	batcher *batch.TopicBatcher
+	buffers       *buffer.TopicBuffers
+	batcher       *batch.TopicBatcher
+	healthTracker *health.HealthTracker
 }
 
 func NewBrokerService(buffers *buffer.TopicBuffers, batcher *batch.TopicBatcher) *BrokerService {
 	return &BrokerService{
-		buffers: buffers,
-		batcher: batcher,
+		buffers:       buffers,
+		batcher:       batcher,
+		healthTracker: health.NewHealthTracker(),
 	}
 }
 
