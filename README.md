@@ -26,11 +26,11 @@ A high-performance, fault-tolerant message broker built in Go that serves as the
 
 ### High-Level Overview
 ```
-┌─────────────┐    TCP/Binary     ┌─────────────────┐
-│  Producers  │ ─────────────────▶│  Obelisk Server │
-│             │                   │                 │
-└─────────────┘                   └─────────────────┘
-                                           │
+┌─────────────┐        TCP/Binary      ┌─────────────────┐
+│  Producers  │ ──────────────────────▶│  Obelisk Server │
+│             │                        │                 │
+└─────────────┘                        └─────────────────┘
+                                                 │
                               ┌──────────────────┼───────────────────┐
                               ▼                  ▼                   ▼
                     ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
