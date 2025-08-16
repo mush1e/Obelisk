@@ -61,7 +61,7 @@ func Serialize(msg Message) ([]byte, error) {
 	if err := binary.Write(&buf, binary.LittleEndian, keyLen); err != nil {
 		return nil, obeliskErrors.NewPermanentError("serialize_key_length", "failed to serialize key length", err)
 	}
-	if _, err := buf.Write(keyBytes); err != nil {
+	if err := binary.Write(&buf, binary.LittleEndian, keyBytes); err != nil {
 		return nil, obeliskErrors.NewPermanentError("serialize_key_data", "failed to serialize key data", err)
 	}
 
