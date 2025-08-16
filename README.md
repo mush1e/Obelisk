@@ -31,15 +31,15 @@ A high-performance, fault-tolerant message broker built in Go that serves as the
 │             │                   │                 │
 └─────────────┘                   └─────────────────┘
                                            │
-                              ┌────────────┼────────────┐
-                              ▼            ▼            ▼
+                              ┌──────────────────┼───────────────────┐
+                              ▼                  ▼                   ▼
                     ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
                     │  Ring Buffers   │ │  Batch Manager  │ │ Topic Storage   │
                     │   (Fast Reads)  │ │ (Efficient I/O) │ │ (Persistence)   │
                     └─────────────────┘ └─────────────────┘ └─────────────────┘
-                                                                      │
-                                                            ┌─────────┼─────────┐
-                                                            ▼         ▼         ▼
+                                                                     │
+                                                           ┌─────────┼─────────┐
+                                                           ▼         ▼         ▼
                                                     ┌──────────────────────────────┐
                                                     │      Per-Topic Storage       │
                                                     │  ┌──────────┐┌─────────────┐ │
@@ -47,8 +47,8 @@ A high-performance, fault-tolerant message broker built in Go that serves as the
                                                     │  │(messages)││(offset→pos) │ │
                                                     │  └──────────┘└─────────────┘ │
                                                     └──────────────────────────────┘
-                                                                      │
-                                                                      ▼
+                                                                    │
+                                                                    ▼
                                                             ┌─────────────────┐
                                                             │   Consumers     │
                                                             │ (Poll/Commit)   │
