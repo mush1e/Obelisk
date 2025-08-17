@@ -7,7 +7,7 @@ A high-performance, fault-tolerant message broker built in Go that serves as the
 ### Core Messaging
 - **Topic-based Architecture**: Organize messages into logical topics with independent storage and indexing
 - **Binary Protocol**: Efficient binary serialization (~38 bytes vs 90 for JSON) for minimal network overhead
-- **Offset-based Consumers**: Track message consumption progress with commit/rollback capabilities
+- **Dual Interface**: TCP for high-performance message ingestion, HTTP for monitoring and administration
 - **At-least-once Delivery**: Guaranteed message delivery with crash recovery support
 
 ### Performance & Reliability
@@ -15,12 +15,21 @@ A high-performance, fault-tolerant message broker built in Go that serves as the
 - **Memory-mapped Indexes**: Fast message lookup using offset-to-position mapping
 - **Ring Buffer Caching**: In-memory buffers for recent messages enable sub-millisecond reads
 - **Thread-safe Operations**: Concurrent producers and consumers with proper mutex protection
+- **File Pooling**: Efficient file descriptor management with automatic cleanup
 
 ### Operational Excellence
 - **Zero Configuration**: Works out of the box with sensible defaults
 - **Graceful Shutdown**: Clean resource cleanup with proper signal handling
 - **Topic Auto-creation**: Topics created automatically on first message
 - **File-based Storage**: Simple, debuggable storage format with no external dependencies
+- **Comprehensive Health Monitoring**: Kubernetes-ready health checks with component-level status
+- **Prometheus Metrics**: Built-in monitoring and observability
+
+### Advanced Features
+- **Corruption Recovery**: Intelligent data corruption detection and recovery
+- **Retry Mechanisms**: Configurable retry policies for transient failures
+- **Error Categorization**: Sophisticated error handling with proper error types
+- **Connection Management**: Active connection tracking and error handling
 
 ## 🏗️ Architecture
 
@@ -120,7 +129,9 @@ mkdir -p data/topics
 go run cmd/Obelisk/main.go
 ```
 
-Server starts on `:8080` and creates topic files in `data/topics/`
+Server starts on:
+- **TCP Server**: `:8080` (message ingestion)
+- **HTTP Server**: `:8081` (REST API, health checks, metrics)
 
 ## 📚 Usage Examples
 
@@ -154,6 +165,64 @@ func main() {
     
     msgBytes, _ := message.Serialize(msg)
     protocol.WriteMessage(writer, msgBytes)
+    
+    // Read acknowledgment
+    response := make([]byte, 3)
+    conn.Read(response)
+    // Response: "OK\n" for success, "NACK:reason" for failure
+}
+```
+
+### HTTP API Usage
+
+#### Health Checks
+```bash
+# Overall system health
+curl http://localhost:8081/health
+
+# Kubernetes readiness probe
+curl http://localhost:8081/health/ready
+
+# Kubernetes liveness probe
+curl http://localhost:8081/health/live
+
+# Prometheus metrics
+curl http://localhost:8081/metrics
+```
+
+#### Health Response Example
+```json
+{
+  "status": "healthy",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "uptime": "2h15m30s",
+  "components": {
+    "buffer": {
+      "status": "healthy",
+      "details": {
+        "success_rate": 0.98,
+        "threshold": 0.95,
+        "operation_count": 15420
+      },
+      "last_check": "2024-01-15T10:30:00Z"
+    },
+    "batcher": {
+      "status": "healthy",
+      "details": {
+        "success_rate": 0.99,
+        "last_flush": "2024-01-15T10:29:55Z",
+        "threshold": 0.95,
+        "operation_count": 15420
+      },
+      "last_check": "2024-01-15T10:30:00Z"
+    }
+  },
+  "summary": {
+    "total_components": 4,
+    "healthy": 4,
+    "degraded": 0,
+    "unhealthy": 0
+  }
 }
 ```
 
@@ -188,23 +257,6 @@ func main() {
         time.Sleep(1 * time.Second)
     }
 }
-```
-
-### Advanced Consumer Operations
-```go
-// Subscribe to multiple topics
-consumer := consumer.NewConsumer("data/topics", "orders", "payments", "notifications")
-
-// Get topic statistics
-count, _ := consumer.GetTopicMessageCount("orders")
-fmt.Printf("Total messages in orders: %d\n", count)
-
-// Reset to replay all messages
-consumer.Reset("orders")
-
-// Check current position
-offset, _ := consumer.GetCurrentOffset("orders")
-fmt.Printf("Currently at offset: %d\n", offset)
 ```
 
 ## 🧪 Testing & Examples
@@ -259,6 +311,28 @@ go run cmd/test-consumer/main.go -topic=topic-1 -mode=continuous
 go run cmd/test-client/main.go -test=size
 ```
 
+## 📊 Monitoring & Observability
+
+### Prometheus Metrics
+The server exposes comprehensive metrics at `/metrics`:
+
+- **Message Throughput**: `obelisk_messages_received_total`, `obelisk_messages_stored_total`
+- **Performance**: `obelisk_batch_size`, `obelisk_flush_duration_seconds`
+- **System Health**: `obelisk_health_status`, `obelisk_component_health`
+- **Connection Stats**: `obelisk_active_connections`, `obelisk_connections_total`
+- **Error Tracking**: `obelisk_connection_errors_total`, `obelisk_messages_failed_total`
+
+### Health Monitoring
+- **Liveness Probe** (`/health/live`): Basic service availability
+- **Readiness Probe** (`/health/ready`): Service ready to accept traffic
+- **Health Check** (`/health`): Comprehensive system health status
+
+### Component Health Tracking
+- **Buffer Health**: Success rate and operation count
+- **Batcher Health**: Flush success rate and timing
+- **Storage Health**: File system accessibility
+- **TCP Server Health**: Connection status and listener health
+
 ## 🏢 Production Use Cases
 
 ### Real-time Event Processing
@@ -292,7 +366,6 @@ go run cmd/test-client/main.go -test=size
 └─────────────────┘    └─────────────┘    └─────────────────┘
 ```
 
-
 ## 🗂️ Project Structure
 
 ```
@@ -310,15 +383,33 @@ obelisk/
 │   │   └── buffer_test.go     # Unit tests
 │   ├── consumer/               # Consumer API
 │   │   └── consumer.go        # Poll/Commit/Reset functionality
+│   ├── errors/                 # Error handling and categorization
+│   │   └── errors.go          # Error types and retry logic
+│   ├── handlers/               # HTTP request handlers
+│   │   ├── health.go          # Health check endpoints
+│   │   ├── messages.go        # Message REST API
+│   │   ├── stats.go           # Statistics endpoints
+│   │   └── middleware.go      # HTTP middleware
+│   ├── health/                 # Health tracking system
+│   │   ├── tracker.go         # Health status tracking
+│   │   └── ring.go            # Health history ring buffer
 │   ├── message/                # Message format
 │   │   ├── message.go         # Binary serialization
 │   │   └── message_test.go    # Serialization tests
-│   ├── server/                 # TCP server
-│   │   └── server.go          # Connection handling + routing
+│   ├── metrics/                # Prometheus metrics
+│   │   └── metrics.go         # Metric definitions
+│   ├── retry/                  # Retry mechanisms
+│   │   └── retry.go           # Configurable retry policies
+│   ├── server/                 # Server infrastructure
+│   │   ├── server.go          # Main server orchestration
+│   │   ├── tcp_server.go      # TCP message handling
+│   │   └── http_server.go     # HTTP REST API
+│   ├── services/               # Business logic services
+│   │   └── broker_service.go  # Core broker functionality
 │   └── storage/                # Persistent storage
 │       ├── storage.go         # Main storage interface
-│       ├── index.go           # Offset-to-position indexing
-│       └── storage_test.go    # Storage tests
+│       ├── filepool.go        # File descriptor pooling
+│       └── corruption_test.go # Corruption recovery tests
 ├── pkg/
 │   └── protocol/              # Wire protocol
 │       └── protocol.go        # Length-prefixed binary protocol
@@ -341,14 +432,18 @@ obelisk/
 - [x] Batched disk I/O
 - [x] Ring buffer caching
 - [x] Binary protocol optimization
+- [x] HTTP REST API
+- [x] Comprehensive health monitoring
+- [x] Prometheus metrics
+- [x] Error categorization and retry logic
+- [x] File pooling and corruption recovery
 
 ### Phase 3: Enhanced APIs (Next)
-- [ ] HTTP/REST API for easier integration
 - [ ] gRPC support for high-performance clients
 - [ ] Consumer groups (multiple consumers sharing work)
 - [ ] Message retention policies
 - [ ] Topic compaction
-- [ ] Metrics and monitoring endpoints
+- [ ] Advanced filtering and routing
 
 ### Phase 4: Distributed Systems (Future)
 - [ ] Multi-node clustering
@@ -385,8 +480,9 @@ go mod tidy
 # Run tests
 go test ./...
 
-# Run integration tests
-make test-integration
+# Run specific test suites
+go test ./internal/storage -v
+go test ./internal/buffer -v
 
 # Start development server
 go run cmd/Obelisk/main.go
@@ -401,6 +497,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Inspired by Apache Kafka's distributed log architecture
 - Binary protocol design influenced by Redis and MessagePack
 - Batching strategy adapted from RocksDB and LevelDB
+- Health monitoring patterns from Kubernetes and modern microservices
 
 ## 📞 Support
 
