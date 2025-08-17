@@ -35,9 +35,15 @@ func NewHTTPServer(addr string, brokerService *services.BrokerService) *HTTPServ
 	// Create HTTP router and configure endpoint handlers
 	mux := http.NewServeMux()
 
-	// Health check endpoint for load balancer and monitoring system integration
-	// This endpoint provides a simple way to verify server availability
-	mux.Handle("GET /health", handlers.Health())
+	// Enhanced health check endpoints for comprehensive monitoring
+	// Main health endpoint with detailed component status
+	mux.Handle("GET /health", handlers.EnhancedHealth(brokerService))
+
+	// Kubernetes readiness probe - checks if service is ready to accept traffic
+	mux.Handle("GET /health/ready", handlers.ReadinessCheck(brokerService))
+
+	// Kubernetes liveness probe - checks if service is alive and responding
+	mux.Handle("GET /health/live", handlers.LivenessCheck(brokerService))
 
 	// Statistics endpoint for operational monitoring and capacity planning
 	// Requires topic query parameter and returns JSON with buffer/persist counts

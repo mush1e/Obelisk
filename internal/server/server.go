@@ -30,12 +30,13 @@ import (
 // through proper startup/shutdown sequencing to ensure data integrity and
 // graceful operation under all conditions.
 type Server struct {
-	tcpServer    *TCPServer
-	httpServer   *HTTPServer
-	batcher      *batch.TopicBatcher
-	topicBuffers *buffer.TopicBuffers
-	pool         *storage.FilePool
-	wg           sync.WaitGroup
+	tcpServer     *TCPServer
+	httpServer    *HTTPServer
+	batcher       *batch.TopicBatcher
+	topicBuffers  *buffer.TopicBuffers
+	pool          *storage.FilePool
+	brokerService *services.BrokerService
+	wg            sync.WaitGroup
 }
 
 // NewServer creates a new server with TCP/HTTP addresses and storage path.
@@ -44,17 +45,19 @@ func NewServer(tcpAddr, httpAddr, logFilePath string) *Server {
 	pool.StartCleanup(time.Minute * 2)
 
 	topicBuffers := buffer.NewTopicBuffers(100)
-	batcher := batch.NewTopicBatcher(logFilePath, 100, time.Second*5, pool)
-	brokerService := services.NewBrokerService(topicBuffers, batcher)
+	brokerService := services.NewBrokerService(topicBuffers, nil) // Will be updated after batcher creation
+	batcher := batch.NewTopicBatcher(logFilePath, 100, time.Second*5, pool, brokerService.GetHealthTracker())
+	brokerService.SetBatcher(batcher) // Update the broker service with the batcher
 	tcpServer := NewTCPServer(tcpAddr, brokerService)
 	httpServer := NewHTTPServer(httpAddr, brokerService)
 
 	return &Server{
-		tcpServer:    tcpServer,
-		httpServer:   httpServer,
-		batcher:      batcher,
-		topicBuffers: topicBuffers,
-		pool:         pool,
+		tcpServer:     tcpServer,
+		httpServer:    httpServer,
+		batcher:       batcher,
+		topicBuffers:  topicBuffers,
+		pool:          pool,
+		brokerService: brokerService,
 	}
 }
 
@@ -73,6 +76,9 @@ func (s *Server) Start() error {
 		defer s.wg.Done()
 		s.httpServer.Start()
 	}()
+
+	// Mark the system as initialized after all components are started
+	s.brokerService.SetInitialized()
 
 	return nil
 }

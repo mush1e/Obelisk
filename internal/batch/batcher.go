@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mush1e/obelisk/internal/health"
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/internal/retry"
 	"github.com/mush1e/obelisk/internal/storage"
@@ -36,6 +37,7 @@ type TopicBatcher struct {
 	maxSize uint32
 	maxWait time.Duration
 	pool    *storage.FilePool
+	health  *health.HealthTracker
 	quit    chan struct{}
 	mtx     sync.RWMutex
 	wg      sync.WaitGroup
@@ -51,13 +53,14 @@ type TopicBatch struct {
 }
 
 // NewTopicBatcher creates a new topic batcher.
-func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration, pool *storage.FilePool) *TopicBatcher {
+func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration, pool *storage.FilePool, health *health.HealthTracker) *TopicBatcher {
 	return &TopicBatcher{
 		batches: make(map[string]*TopicBatch),
 		baseDir: baseDir,
 		maxSize: maxSize,
 		maxWait: maxWait,
 		pool:    pool,
+		health:  health,
 		quit:    make(chan struct{}),
 	}
 }
@@ -205,6 +208,7 @@ func (tb *TopicBatcher) FlushAll() {
 			fmt.Printf("[BATCHER] error flushing topic %s: %v\n", b.logFile, err)
 		}
 	}
+	tb.health.RecordFlush()
 }
 
 // flushTopic atomically flushes a topic batch using RAII pattern - RACE-FREE!

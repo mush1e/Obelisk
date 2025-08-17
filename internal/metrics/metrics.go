@@ -34,7 +34,12 @@ type BrokerMetrics struct {
 	// Connection metrics
 	ActiveConnections prometheus.Gauge
 	ConnectionsTotal  prometheus.Counter
-	ConnectionErrors  prometheus.CounterVec
+	ConnectionErrors  *prometheus.CounterVec
+
+	// Health check metrics
+	HealthStatus        *prometheus.GaugeVec
+	ComponentHealth     *prometheus.GaugeVec
+	HealthCheckDuration *prometheus.HistogramVec
 }
 
 // NewBrokerMetrics creates and registers all Prometheus metrics
@@ -168,12 +173,37 @@ func NewBrokerMetrics() *BrokerMetrics {
 			},
 		),
 
-		ConnectionErrors: *promauto.NewCounterVec(
+		ConnectionErrors: promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "obelisk_connection_errors_total",
 				Help: "Total number of connection errors",
 			},
 			[]string{"error_type"}, // error_type: timeout, protocol, etc.
+		),
+
+		HealthStatus: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "obelisk_health_status",
+				Help: "Current health status of the system (0=unhealthy, 1=degraded, 2=healthy)",
+			},
+			[]string{"component"}, // component: overall, buffer, batcher, storage, tcp_server
+		),
+
+		ComponentHealth: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "obelisk_component_health",
+				Help: "Health status of individual components (0=unhealthy, 1=degraded, 2=healthy)",
+			},
+			[]string{"component", "status"}, // component: buffer, batcher, storage, tcp_server
+		),
+
+		HealthCheckDuration: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "obelisk_health_check_duration_seconds",
+				Help:    "Duration of health checks",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"endpoint"}, // endpoint: health, ready, live
 		),
 	}
 }

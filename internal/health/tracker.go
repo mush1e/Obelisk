@@ -56,3 +56,48 @@ func (t *HealthTracker) GetBatcherHealth() (rate float64, health bool) {
 	health = rate >= 0.95
 	return
 }
+
+// GetOverallHealth returns the overall health status based on all components
+func (t *HealthTracker) GetOverallHealth() string {
+	bufferRate, bufferHealthy := t.GetBufferHealth()
+	batcherRate, batcherHealthy := t.GetBatcherHealth()
+
+	// Check if batcher is alive (has flushed recently)
+	lastFlush := time.Unix(0, t.lastFlushTime.Load())
+	batcherAlive := time.Since(lastFlush) < 30*time.Second
+
+	if !bufferHealthy || !batcherHealthy || !batcherAlive {
+		return "degraded"
+	}
+
+	if bufferRate < 0.8 || batcherRate < 0.8 {
+		return "unhealthy"
+	}
+
+	return "healthy"
+}
+
+// GetUptime returns the duration since the tracker was created
+func (t *HealthTracker) GetUptime() time.Duration {
+	return time.Since(t.startTime)
+}
+
+// IsInitialized returns whether the system has been marked as initialized
+func (t *HealthTracker) IsInitialized() bool {
+	return t.initialized.Load()
+}
+
+// GetLastFlushTime returns the last flush time as a time.Time
+func (t *HealthTracker) GetLastFlushTime() time.Time {
+	return time.Unix(0, t.lastFlushTime.Load())
+}
+
+// GetBufferOperationCount returns the number of buffer operations tracked
+func (t *HealthTracker) GetBufferOperationCount() int {
+	return t.recentBufferOps.Count()
+}
+
+// GetBatcherOperationCount returns the number of batcher operations tracked
+func (t *HealthTracker) GetBatcherOperationCount() int {
+	return t.recentBatcherOps.Count()
+}

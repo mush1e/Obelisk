@@ -22,6 +22,16 @@ func NewBrokerService(buffers *buffer.TopicBuffers, batcher *batch.TopicBatcher)
 	}
 }
 
+// SetBatcher sets the batcher for the broker service
+func (s *BrokerService) SetBatcher(batcher *batch.TopicBatcher) {
+	s.batcher = batcher
+}
+
+// GetHealthTracker returns the health tracker
+func (s *BrokerService) GetHealthTracker() *health.HealthTracker {
+	return s.healthTracker
+}
+
 // PublishMessage saves a message (used by both TCP and HTTP!)
 func (s *BrokerService) PublishMessage(msg *message.Message) error {
 	// 📊 Track message received
@@ -63,4 +73,46 @@ func (s *BrokerService) GetTopicStats(topic string) (int, int64, error) {
 	}
 
 	return buffered, persisted, err
+}
+
+// Health-related methods for the enhanced health checking system
+
+// GetUptime returns the duration since the health tracker was created
+func (s *BrokerService) GetUptime() string {
+	return s.healthTracker.GetUptime().String()
+}
+
+// IsInitialized returns whether the system has been marked as initialized
+func (s *BrokerService) IsInitialized() bool {
+	return s.healthTracker.IsInitialized()
+}
+
+// GetBufferHealth returns the health status of the buffer system
+func (s *BrokerService) GetBufferHealth() (float64, bool) {
+	return s.healthTracker.GetBufferHealth()
+}
+
+// GetBatcherHealth returns the health status of the batcher system
+func (s *BrokerService) GetBatcherHealth() (float64, bool) {
+	return s.healthTracker.GetBatcherHealth()
+}
+
+// GetLastFlushTime returns the last flush time
+func (s *BrokerService) GetLastFlushTime() string {
+	return s.healthTracker.GetLastFlushTime().Format("2006-01-02T15:04:05Z07:00")
+}
+
+// GetBufferOperationCount returns the number of buffer operations tracked
+func (s *BrokerService) GetBufferOperationCount() int {
+	return s.healthTracker.GetBufferOperationCount()
+}
+
+// GetBatcherOperationCount returns the number of batcher operations tracked
+func (s *BrokerService) GetBatcherOperationCount() int {
+	return s.healthTracker.GetBatcherOperationCount()
+}
+
+// SetInitialized marks the system as initialized
+func (s *BrokerService) SetInitialized() {
+	s.healthTracker.SetInitialized()
 }
