@@ -43,20 +43,16 @@ func (t *HealthTracker) SetInitialized() {
 	t.initialized.Store(true)
 }
 
-// GetBufferHealth returns if percentage of success is >= 95%
-func (t *HealthTracker) GetBufferHealth() bool {
-	bufferSuccessRate := t.recentBufferOps.SuccessRate()
-	if bufferSuccessRate >= 0.95 {
-		return true
-	}
-	return false
+// GetBufferHealth returns rate of successful buffer ops and health
+func (t *HealthTracker) GetBufferHealth() (rate float64, health bool) {
+	rate = t.recentBufferOps.SuccessRate()
+	health = rate >= 0.95
+	return
 }
 
-// GetBatcherHealth returns if percentage of success is >= 95%
-func (t *HealthTracker) GetBatcherHealth() bool {
-	batcherSuccessRate := t.recentBatcherOps.SuccessRate()
-	if batcherSuccessRate >= 0.95 {
-		return true
-	}
-	return false
+// GetBatcherHealth returns rate of successful batcher ops and health
+func (t *HealthTracker) GetBatcherHealth() (rate float64, health bool) {
+	rate = t.recentBatcherOps.SuccessRate()
+	health = rate >= 0.95
+	return
 }

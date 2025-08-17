@@ -30,8 +30,12 @@ func (s *BrokerService) PublishMessage(msg *message.Message) error {
 	// Save to memory for fast access
 	if err := s.buffers.Push(*msg); err != nil {
 		// Track buffer failures
+		// is buffer failure even possible?
 		metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "buffer_full").Inc()
 		// Continue to storage even if buffer fails
+		s.healthTracker.RecordBufferPublish(false)
+	} else {
+		s.healthTracker.RecordBufferPublish(true)
 	}
 
 	// Save to disk for permanent storage
@@ -39,11 +43,13 @@ func (s *BrokerService) PublishMessage(msg *message.Message) error {
 	if err != nil {
 		// 📊 Track storage failures
 		metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "storage_error").Inc()
+		s.healthTracker.RecordBatcherPublish(false)
 		return err
 	}
 
 	// 📊 Track successful storage
 	metrics.Metrics.MessagesStored.WithLabelValues(msg.Topic).Inc()
+	s.healthTracker.RecordBatcherPublish(true)
 	return nil
 }
 
