@@ -48,7 +48,7 @@ func testSizeBatching(writer *bufio.Writer) {
 	fmt.Println("Testing size-based batching (sending 150 messages quickly)...")
 
 	start := time.Now()
-	for i := range 150 {
+	for i := 0; i < 150; i++ {
 		// Create test message with rotating topics
 		msg := message.Message{
 			Timestamp: time.Now(),
@@ -77,7 +77,7 @@ func testSizeBatching(writer *bufio.Writer) {
 func testTimeBatching(writer *bufio.Writer) {
 	fmt.Println("Testing time-based batching (5 messages with 2s delays)...")
 
-	for i := range 5 {
+	for i := 0; i < 5; i++ {
 		// Create test message with rotating topics
 		msg := message.Message{
 			Timestamp: time.Now(),
@@ -104,7 +104,7 @@ func testTimeBatching(writer *bufio.Writer) {
 func testRealisticLoad(writer *bufio.Writer) {
 	fmt.Println("Testing realistic load (messages over time)...")
 
-	for i := range 2001 {
+	for i := 0; i < 2001; i++ {
 		// Create test message with rotating topics
 		msg := message.Message{
 			Timestamp: time.Now(),

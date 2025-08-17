@@ -169,12 +169,12 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 				case obeliskErrors.GetErrorType(err) == obeliskErrors.ErrorTypeData:
 					metrics.Metrics.ConnectionErrors.WithLabelValues("data_corruption").Inc()
 					fmt.Printf("Corrupted message from %s: %v\n", conn.RemoteAddr(), err)
-					t.sendNack(writer, "CORRUPTED")
+					t.sendNack(conn, writer, "CORRUPTED")
 					continue
 				case obeliskErrors.GetErrorType(err) == obeliskErrors.ErrorTypePermanent:
 					metrics.Metrics.ConnectionErrors.WithLabelValues("protocol_violation").Inc()
 					fmt.Printf("Protocol violation from %s: %v\n", conn.RemoteAddr(), err)
-					t.sendNack(writer, "PROTOCOL_ERROR")
+					t.sendNack(conn, writer, "PROTOCOL_ERROR")
 					return
 				case obeliskErrors.IsRetryable(err):
 					metrics.Metrics.ConnectionErrors.WithLabelValues("transient_error").Inc()
@@ -191,8 +191,8 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 			if err != nil {
 				// Track deserialization errors
 				metrics.Metrics.ConnectionErrors.WithLabelValues("invalid_message").Inc()
-				fmt.Printf("Invalid message format from %s: %v\n", conn.RemoteAddr(), err)
-				t.sendNack(writer, "INVALID_FORMAT")
+					fmt.Printf("Invalid message format from %s: %v\n", conn.RemoteAddr(), err)
+					t.sendNack(conn, writer, "INVALID_FORMAT")
 				continue
 			}
 
@@ -206,17 +206,21 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 			if err != nil {
 				// Track publish failures
 				metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "publish_failed").Inc()
-				fmt.Printf("Failed to publish message: %v\n", err)
-				t.sendNack(writer, "PUBLISH_FAILED")
+					fmt.Printf("Failed to publish message: %v\n", err)
+					t.sendNack(conn, writer, "PUBLISH_FAILED")
 				continue
 			}
 
 			// Send acknowledgment with retry
 			ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
 			err = retry.Retry(ctx, ackRetryConfig, func() error {
+				// Set a write deadline to prevent blocking on slow/stalled clients
+				_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 				if _, err := writer.WriteString("OK\n"); err != nil {
 					return obeliskErrors.NewTransientError("send_ack", "failed to send acknowledgment", err)
 				}
+				// Ensure data is flushed within the deadline as well
+				_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 				return writer.Flush()
 			})
 			cancel()
@@ -232,7 +236,10 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 	}
 }
 
-func (t *TCPServer) sendNack(w *bufio.Writer, reason string) {
-	w.WriteString(fmt.Sprintf("NACK:%s\n", reason))
-	w.Flush()
+func (t *TCPServer) sendNack(conn net.Conn, w *bufio.Writer, reason string) {
+	// Set a write deadline to avoid blocking on slow clients
+	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_, _ = w.WriteString(fmt.Sprintf("NACK:%s\n", reason))
+	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_ = w.Flush()
 }

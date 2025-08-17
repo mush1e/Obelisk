@@ -8,6 +8,7 @@ import (
 
 	"github.com/mush1e/obelisk/internal/batch"
 	"github.com/mush1e/obelisk/internal/buffer"
+	"github.com/mush1e/obelisk/internal/health"
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/internal/storage"
 )
@@ -56,6 +57,7 @@ func (h *TestHelper) NewBatcher() *batch.TopicBatcher {
 		5,                    // Small batch size for testing
 		100*time.Millisecond, // Fast flush for testing
 		h.pool,
+		health.NewHealthTracker(),
 	)
 }
 

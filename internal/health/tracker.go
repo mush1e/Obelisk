@@ -59,21 +59,25 @@ func (t *HealthTracker) GetBatcherHealth() (rate float64, health bool) {
 
 // GetOverallHealth returns the overall health status based on all components
 func (t *HealthTracker) GetOverallHealth() string {
-	bufferRate, bufferHealthy := t.GetBufferHealth()
-	batcherRate, batcherHealthy := t.GetBatcherHealth()
+	bufferRate, _ := t.GetBufferHealth()
+	batcherRate, _ := t.GetBatcherHealth()
 
 	// Check if batcher is alive (has flushed recently)
 	lastFlush := time.Unix(0, t.lastFlushTime.Load())
 	batcherAlive := time.Since(lastFlush) < 30*time.Second
 
-	if !bufferHealthy || !batcherHealthy || !batcherAlive {
-		return "degraded"
-	}
-
-	if bufferRate < 0.8 || batcherRate < 0.8 {
+	// If the batcher hasn't flushed recently, that's "unhealthy"
+	if !batcherAlive {
 		return "unhealthy"
 	}
 
+	// Compute overall status based on success rates
+	if bufferRate < 0.80 || batcherRate < 0.80 {
+		return "unhealthy"
+	}
+	if bufferRate < 0.95 || batcherRate < 0.95 {
+		return "degraded"
+	}
 	return "healthy"
 }
 
