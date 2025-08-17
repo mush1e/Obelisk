@@ -2,6 +2,7 @@ package health
 
 import "sync"
 
+// maybe make this a generic and use as topics buffer? on some DRY shi
 type ringBuffer struct {
 	data  []bool
 	pos   int
