@@ -1,0 +1,24 @@
+server:
+  tcp_addr: ":8082"
+  http_addr: ":8083"
+  read_timeout: "30s"
+  write_timeout: "30s"
+  max_connections: 1000
+
+storage:
+  data_dir: "data/topics"
+  batch_size: 100
+  flush_interval: "5s"
+  max_message_size: 10485760
+  file_pool_timeout: "1h"
+  cleanup_interval: "2m"
+
+metrics:
+  enabled: true
+  path: "/metrics"
+  buffer_size: 1000
+
+health:
+  check_interval: "30s"
+  success_threshold: 0.95
+  history_size: 100

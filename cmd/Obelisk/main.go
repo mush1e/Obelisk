@@ -1,38 +1,62 @@
-// Obelisk message broker server entry point.
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/mush1e/obelisk/internal/config"
 	"github.com/mush1e/obelisk/internal/metrics"
 	"github.com/mush1e/obelisk/internal/server"
 )
 
 func main() {
-	// Initialize Prometheus metrics
-	metrics.InitMetrics()
-	fmt.Println("📊 Metrics initialized")
+	// Parse command line flags
+	configPath := flag.String("config", "", "Path to config file (optional)")
+	flag.Parse()
 
-	// Graceful shutdown handling
+	// Load configuration
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		fmt.Printf("Failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		fmt.Printf("Invalid config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Initialize metrics
+	if cfg.Metrics.Enabled {
+		metrics.InitMetrics()
+		fmt.Println("Metrics initialized")
+	}
+
+	// Graceful shutdown
 	gracefulShutdown := make(chan os.Signal, 1)
 	signal.Notify(gracefulShutdown, syscall.SIGINT, syscall.SIGTERM)
 
-	logFilePath := "data/topics/"
-
-	srv := server.NewServer(":8080", ":8081", logFilePath)
+	// Create server with config
+	srv := server.NewServerWithConfig(cfg)
 
 	if err := srv.Start(); err != nil {
 		fmt.Printf("Failed to start server: %v\n", err)
 		return
 	}
-	fmt.Println("Server running. Press Ctrl+C to stop...")
-	fmt.Println("📊 Metrics available at: http://localhost:8081/metrics")
+
+	fmt.Printf("Obelisk started!\n")
+	fmt.Printf("TCP server: %s\n", cfg.Server.TCPAddr)
+	fmt.Printf("HTTP server: %s\n", cfg.Server.HTTPAddr)
+	if cfg.Metrics.Enabled {
+		fmt.Printf("Metrics: http://%s%s\n",
+			cfg.Server.HTTPAddr[1:], cfg.Metrics.Path)
+	}
 
 	<-gracefulShutdown
 
-	fmt.Println("\nServer shutting down!")
+	fmt.Println("\nServer shutting down...")
 	srv.Stop()
 }

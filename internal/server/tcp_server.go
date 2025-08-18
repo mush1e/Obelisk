@@ -191,8 +191,8 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 			if err != nil {
 				// Track deserialization errors
 				metrics.Metrics.ConnectionErrors.WithLabelValues("invalid_message").Inc()
-					fmt.Printf("Invalid message format from %s: %v\n", conn.RemoteAddr(), err)
-					t.sendNack(conn, writer, "INVALID_FORMAT")
+				fmt.Printf("Invalid message format from %s: %v\n", conn.RemoteAddr(), err)
+				t.sendNack(conn, writer, "INVALID_FORMAT")
 				continue
 			}
 
@@ -206,8 +206,8 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 			if err != nil {
 				// Track publish failures
 				metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "publish_failed").Inc()
-					fmt.Printf("Failed to publish message: %v\n", err)
-					t.sendNack(conn, writer, "PUBLISH_FAILED")
+				fmt.Printf("Failed to publish message: %v\n", err)
+				t.sendNack(conn, writer, "PUBLISH_FAILED")
 				continue
 			}
 

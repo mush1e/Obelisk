@@ -8,6 +8,7 @@ import (
 
 	"github.com/mush1e/obelisk/internal/batch"
 	"github.com/mush1e/obelisk/internal/buffer"
+	"github.com/mush1e/obelisk/internal/config"
 	"github.com/mush1e/obelisk/internal/services"
 	"github.com/mush1e/obelisk/internal/storage"
 
@@ -50,6 +51,36 @@ func NewServer(tcpAddr, httpAddr, logFilePath string) *Server {
 	brokerService.SetBatcher(batcher) // Update the broker service with the batcher
 	tcpServer := NewTCPServer(tcpAddr, brokerService)
 	httpServer := NewHTTPServer(httpAddr, brokerService)
+
+	return &Server{
+		tcpServer:     tcpServer,
+		httpServer:    httpServer,
+		batcher:       batcher,
+		topicBuffers:  topicBuffers,
+		pool:          pool,
+		brokerService: brokerService,
+	}
+}
+
+// NewServerWithConfig creates a server using configuration
+func NewServerWithConfig(cfg *config.Config) *Server {
+	pool := storage.NewFilePool(cfg.Storage.FilePoolTimeout)
+	pool.StartCleanup(cfg.Storage.CleanupInterval)
+
+	topicBuffers := buffer.NewTopicBuffers(100)
+	brokerService := services.NewBrokerService(topicBuffers, nil)
+
+	batcher := batch.NewTopicBatcher(
+		cfg.Storage.DataDir,
+		cfg.Storage.BatchSize,
+		cfg.Storage.FlushInterval,
+		pool,
+		brokerService.GetHealthTracker(),
+	)
+
+	brokerService.SetBatcher(batcher)
+	tcpServer := NewTCPServer(cfg.Server.TCPAddr, brokerService)
+	httpServer := NewHTTPServer(cfg.Server.HTTPAddr, brokerService)
 
 	return &Server{
 		tcpServer:     tcpServer,
