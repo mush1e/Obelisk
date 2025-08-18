@@ -98,8 +98,8 @@ func (tb *TopicBatcher) Start() error {
 }
 
 func (tb *TopicBatcher) discoverExistingTopics() error {
-
-	files, err := filepath.Glob(filepath.Join(tb.baseDir, "*.log"))
+	// First, find all entries in the base directory
+	entries, err := os.ReadDir(tb.baseDir)
 	if err != nil {
 		return err
 	}
@@ -107,31 +107,79 @@ func (tb *TopicBatcher) discoverExistingTopics() error {
 	tb.mtx.Lock()
 	defer tb.mtx.Unlock()
 
-	for _, logFile := range files {
-		base := filepath.Base(logFile)
-		topic := strings.TrimSuffix(base, ".log")
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			// Check for legacy single-file topics (backward compatibility)
+			if strings.HasSuffix(entry.Name(), ".log") {
+				topic := strings.TrimSuffix(entry.Name(), ".log")
+				logFile := filepath.Join(tb.baseDir, entry.Name())
+				idxFile := filepath.Join(tb.baseDir, topic+".idx")
 
-		if _, exists := tb.batches[topic]; exists {
-			continue
+				index, err := storage.LoadIndex(idxFile)
+				if err != nil {
+					fmt.Printf("[BATCHER] Warning: failed to load index for legacy topic %s: %v\n", topic, err)
+					index = &storage.OffsetIndex{Positions: []int64{}}
+				}
+
+				batch := &TopicBatch{
+					buffer:  make([]message.Message, 0, tb.maxSize),
+					index:   index,
+					logFile: logFile,
+					idxFile: idxFile,
+				}
+
+				// Use topic name as key for legacy topics
+				tb.batches[topic] = batch
+				fmt.Printf("[BATCHER] Discovered legacy topic: %s (messages: %d)\n", topic, len(index.Positions))
+			}
+		} else {
+			// This is a topic directory with partitions
+			topicName := entry.Name()
+			topicDir := filepath.Join(tb.baseDir, topicName)
+
+			// Find all partition files in this topic directory
+			partitionFiles, err := filepath.Glob(filepath.Join(topicDir, "partition-*.log"))
+			if err != nil {
+				fmt.Printf("[BATCHER] Warning: failed to glob partition files for %s: %v\n", topicName, err)
+				continue
+			}
+
+			for _, pFile := range partitionFiles {
+				// Extract partition number from filename
+				base := filepath.Base(pFile)
+				var partition int
+				_, err := fmt.Sscanf(base, "partition-%d.log", &partition)
+				if err != nil {
+					fmt.Printf("[BATCHER] Warning: failed to parse partition from %s: %v\n", base, err)
+					continue
+				}
+
+				logFile := pFile
+				idxFile := strings.TrimSuffix(pFile, ".log") + ".idx"
+
+				index, err := storage.LoadIndex(idxFile)
+				if err != nil {
+					fmt.Printf("[BATCHER] Warning: failed to load index for %s partition %d: %v\n", topicName, partition, err)
+					index = &storage.OffsetIndex{Positions: []int64{}}
+				}
+
+				batch := &TopicBatch{
+					buffer:  make([]message.Message, 0, tb.maxSize),
+					index:   index,
+					logFile: logFile,
+					idxFile: idxFile,
+				}
+
+				// Use consistent partition key format: topic::partition
+				partitionKey := fmt.Sprintf("%s::%d", topicName, partition)
+				tb.batches[partitionKey] = batch
+
+				fmt.Printf("[BATCHER] Discovered topic %s partition %d (messages: %d)\n",
+					topicName, partition, len(index.Positions))
+			}
 		}
-
-		idxFile := filepath.Join(tb.baseDir, topic+".idx")
-		index, err := storage.LoadIndex(idxFile)
-		if err != nil {
-			fmt.Printf("[BATCHER] Warning: failed to load index for topic %s: %v\n", topic, err)
-			index = &storage.OffsetIndex{Positions: []int64{}}
-		}
-
-		batch := &TopicBatch{
-			buffer:  make([]message.Message, 0, tb.maxSize),
-			index:   index,
-			logFile: logFile,
-			idxFile: idxFile,
-		}
-
-		tb.batches[topic] = batch
-		fmt.Printf("[BATCHER] Discovered existing topic: %s (messages: %d)\n", topic, len(index.Positions))
 	}
+
 	return nil
 }
 
@@ -157,6 +205,8 @@ func (tb *TopicBatcher) createTopicPartitionBatch(topic string, partition int) *
 		index = &storage.OffsetIndex{Positions: []int64{}}
 	}
 
+	fmt.Printf("[BATCHER] Created batch for topic %s partition %d\n", topic, partition)
+
 	return &TopicBatch{
 		buffer:  make([]message.Message, 0, tb.maxSize),
 		index:   index,
@@ -173,8 +223,12 @@ func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 	// Determine which partition this message goes to
 	partition := storage.GetPartition(msg.Key, partitionCount)
 
-	// Create a partition key for batching (topic + partition)
-	partitionKey := fmt.Sprintf("%s-partition-%d", msg.Topic, partition)
+	// Create a consistent partition key for batching: topic::partition
+	partitionKey := fmt.Sprintf("%s::%d", msg.Topic, partition)
+
+	// Debug logging
+	fmt.Printf("[BATCHER] Message for topic '%s' with key '%s' -> partition %d/%d (batch key: %s)\n",
+		msg.Topic, msg.Key, partition, partitionCount, partitionKey)
 
 	// Cheap check
 	tb.mtx.RLock()
@@ -196,9 +250,14 @@ func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 	batch.mtx.Lock()
 	batch.buffer = append(batch.buffer, msg)
 	shouldFlush := len(batch.buffer) >= int(tb.maxSize)
+	bufferSize := len(batch.buffer)
 	batch.mtx.Unlock()
 
+	fmt.Printf("[BATCHER] Added message to %s (buffer size: %d/%d)\n",
+		partitionKey, bufferSize, tb.maxSize)
+
 	if shouldFlush {
+		fmt.Printf("[BATCHER] Triggering flush for %s (buffer full)\n", partitionKey)
 		return tb.flushTopic(batch)
 	}
 	return nil
@@ -206,21 +265,28 @@ func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 
 // FlushAll flushes all batches with pending messages.
 func (tb *TopicBatcher) FlushAll() {
+	fmt.Printf("[BATCHER] FlushAll triggered\n")
 
 	tb.mtx.RLock()
 	snap := make([]*TopicBatch, 0, len(tb.batches))
-	for _, b := range tb.batches {
+	batchNames := make([]string, 0, len(tb.batches))
+	for name, b := range tb.batches {
 		b.mtx.Lock()
 		if len(b.buffer) > 0 {
 			snap = append(snap, b)
+			batchNames = append(batchNames, name)
 		}
 		b.mtx.Unlock()
 	}
 	tb.mtx.RUnlock()
 
-	for _, b := range snap {
+	if len(snap) > 0 {
+		fmt.Printf("[BATCHER] Flushing %d batches: %v\n", len(snap), batchNames)
+	}
+
+	for i, b := range snap {
 		if err := tb.flushTopic(b); err != nil {
-			fmt.Printf("[BATCHER] error flushing topic %s: %v\n", b.logFile, err)
+			fmt.Printf("[BATCHER] error flushing %s: %v\n", batchNames[i], err)
 		}
 	}
 	tb.health.RecordFlush()
@@ -238,7 +304,11 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 	local := make([]message.Message, len(batch.buffer))
 	copy(local, batch.buffer)
 	batch.buffer = batch.buffer[:0]
+	logFile := batch.logFile
+	idxFile := batch.idxFile
 	batch.mtx.Unlock()
+
+	fmt.Printf("[BATCHER] Flushing %d messages to %s\n", len(local), logFile)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -251,11 +321,11 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 	}
 
 	// File is automatically acquired, protected from cleanup, and released!
-	err := tb.pool.WithFile(batch.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, func(f *storage.File) error {
+	err := tb.pool.WithFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, func(f *storage.File) error {
 		// File is guaranteed to be available and protected from cleanup here!
 		return retry.Retry(ctx, aggressiveConfig, func() error {
 			// Use the file directly - no pool access needed, no race conditions!
-			return storage.AppendMessagesWithFile(f, batch.idxFile, local, batch.index)
+			return storage.AppendMessagesWithFile(f, idxFile, local, batch.index)
 		})
 	})
 
@@ -272,25 +342,37 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 		return err
 	}
 
+	fmt.Printf("[BATCHER] Successfully flushed %d messages to %s\n", len(local), logFile)
 	// File automatically released when WithFile callback exits
 	return nil
 }
 
 // GetTopicStats returns buffered and persisted message counts.
+// Note: This needs updating for partitioned topics
 func (tb *TopicBatcher) GetTopicStats(topic string) (int, int64, error) {
-
 	tb.mtx.RLock()
-	batch, exists := tb.batches[topic]
-	tb.mtx.RUnlock()
-	if !exists {
+	defer tb.mtx.RUnlock()
+
+	totalBuffered := 0
+	totalPersisted := int64(0)
+	found := false
+
+	// Check all batches for this topic (including all partitions)
+	for key, batch := range tb.batches {
+		// Check if this batch belongs to the requested topic
+		if key == topic || strings.HasPrefix(key, topic+"::") {
+			found = true
+			batch.mtx.Lock()
+			totalBuffered += len(batch.buffer)
+			totalPersisted += int64(len(batch.index.Positions))
+			batch.mtx.Unlock()
+		}
+	}
+
+	if !found {
 		return 0, 0, obeliskErrors.NewPermanentError("get_topic_stats", "topic not found",
 			fmt.Errorf("topic: %s", topic))
 	}
 
-	batch.mtx.Lock()
-	buffered := len(batch.buffer)
-	total := int64(len(batch.index.Positions))
-	batch.mtx.Unlock()
-
-	return buffered, total, nil
+	return totalBuffered, totalPersisted, nil
 }
