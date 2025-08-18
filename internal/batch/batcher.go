@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mush1e/obelisk/internal/config"
 	"github.com/mush1e/obelisk/internal/health"
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/internal/retry"
@@ -41,6 +42,7 @@ type TopicBatcher struct {
 	quit    chan struct{}
 	mtx     sync.RWMutex
 	wg      sync.WaitGroup
+	config  *config.Config
 }
 
 // TopicBatch holds buffered messages and storage metadata for a single topic.
@@ -53,7 +55,7 @@ type TopicBatch struct {
 }
 
 // NewTopicBatcher creates a new topic batcher.
-func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration, pool *storage.FilePool, health *health.HealthTracker) *TopicBatcher {
+func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration, pool *storage.FilePool, health *health.HealthTracker, cfg *config.Config) *TopicBatcher {
 	return &TopicBatcher{
 		batches: make(map[string]*TopicBatch),
 		baseDir: baseDir,
@@ -62,6 +64,7 @@ func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration, pool
 		pool:    pool,
 		health:  health,
 		quit:    make(chan struct{}),
+		config:  cfg,
 	}
 }
 
@@ -138,16 +141,19 @@ func (tb *TopicBatcher) Stop() {
 	tb.wg.Wait()
 }
 
-// createTopicBatch creates or loads a TopicBatch for a topic.
-func (tb *TopicBatcher) createTopicBatch(topic string) *TopicBatch {
+// createTopicPartitionBatch creates or loads a TopicBatch for a specific partition.
+func (tb *TopicBatcher) createTopicPartitionBatch(topic string, partition int) *TopicBatch {
+	// Ensure topic directory exists
+	if err := storage.EnsureTopicDirectory(tb.baseDir, topic); err != nil {
+		fmt.Printf("[BATCHER] Warning: failed to create topic directory for %s: %v\n", topic, err)
+	}
 
-	logFile := filepath.Join(tb.baseDir, topic+".log")
-	idxFile := filepath.Join(tb.baseDir, topic+".idx")
+	// Get partition-specific file paths
+	logFile, idxFile := storage.GetPartitionedPaths(tb.baseDir, topic, partition)
 
 	index, err := storage.LoadIndex(idxFile)
 	if err != nil {
-
-		fmt.Printf("[BATCHER] Warning: failed to load index for topic %s: %v\n", topic, err)
+		fmt.Printf("[BATCHER] Warning: failed to load index for %s partition %d: %v\n", topic, partition, err)
 		index = &storage.OffsetIndex{Positions: []int64{}}
 	}
 
@@ -161,23 +167,32 @@ func (tb *TopicBatcher) createTopicBatch(topic string) *TopicBatch {
 
 // AddMessage adds a message to its topic batch. Triggers flush when full.
 func (tb *TopicBatcher) AddMessage(msg message.Message) error {
+	// Get partition count for this topic
+	partitionCount := tb.config.GetTopicPartitions(msg.Topic)
+
+	// Determine which partition this message goes to
+	partition := storage.GetPartition(msg.Key, partitionCount)
+
+	// Create a partition key for batching (topic + partition)
+	partitionKey := fmt.Sprintf("%s-partition-%d", msg.Topic, partition)
+
 	// Cheap check
 	tb.mtx.RLock()
-	batch, exists := tb.batches[msg.Topic]
+	batch, exists := tb.batches[partitionKey]
 	tb.mtx.RUnlock()
 
 	if !exists {
 		tb.mtx.Lock()
-		// Double-check after acquiring write lock since it might take time to get the lock
-		batch, exists = tb.batches[msg.Topic]
+		// Double-check after acquiring write lock
+		batch, exists = tb.batches[partitionKey]
 		if !exists {
-			batch = tb.createTopicBatch(msg.Topic)
-			tb.batches[msg.Topic] = batch
+			batch = tb.createTopicPartitionBatch(msg.Topic, partition)
+			tb.batches[partitionKey] = batch
 		}
 		tb.mtx.Unlock()
 	}
 
-	// Now work with the specific topic batch
+	// Now work with the specific partition batch
 	batch.mtx.Lock()
 	batch.buffer = append(batch.buffer, msg)
 	shouldFlush := len(batch.buffer) >= int(tb.maxSize)

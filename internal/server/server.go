@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -40,14 +41,20 @@ type Server struct {
 	wg            sync.WaitGroup
 }
 
-// NewServer creates a new server with TCP/HTTP addresses and storage path.
+// NewServer creates a new server with TCP/HTTP addresses and storage path. [DEPRECATED]
 func NewServer(tcpAddr, httpAddr, logFilePath string) *Server {
 	pool := storage.NewFilePool(time.Hour)
 	pool.StartCleanup(time.Minute * 2)
 
+	cfg, err := config.LoadConfig("")
+	if err != nil {
+		fmt.Printf("Failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
 	topicBuffers := buffer.NewTopicBuffers(100)
 	brokerService := services.NewBrokerService(topicBuffers, nil) // Will be updated after batcher creation
-	batcher := batch.NewTopicBatcher(logFilePath, 100, time.Second*5, pool, brokerService.GetHealthTracker())
+	batcher := batch.NewTopicBatcher(logFilePath, 100, time.Second*5, pool, brokerService.GetHealthTracker(), cfg)
 	brokerService.SetBatcher(batcher) // Update the broker service with the batcher
 	tcpServer := NewTCPServer(tcpAddr, brokerService)
 	httpServer := NewHTTPServer(httpAddr, brokerService)
@@ -76,6 +83,7 @@ func NewServerWithConfig(cfg *config.Config) *Server {
 		cfg.Storage.FlushInterval,
 		pool,
 		brokerService.GetHealthTracker(),
+		cfg,
 	)
 
 	brokerService.SetBatcher(batcher)

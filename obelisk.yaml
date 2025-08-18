@@ -1,6 +1,6 @@
 server:
-  tcp_addr: ":8082"
-  http_addr: ":8083"
+  tcp_addr: ":8080"
+  http_addr: ":8081"
   read_timeout: "30s"
   write_timeout: "30s"
   max_connections: 1000
