@@ -29,6 +29,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// new random test
+	fmt.Printf("Default partitions: %d\n", cfg.Storage.DefaultPartitions)
+	fmt.Printf("Orders partitions: %d\n", cfg.GetTopicPartitions("orders"))
+	fmt.Printf("Random topic partitions: %d\n", cfg.GetTopicPartitions("random-topic"))
+
 	// Initialize metrics
 	if cfg.Metrics.Enabled {
 		metrics.InitMetrics()

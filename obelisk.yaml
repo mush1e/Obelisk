@@ -12,6 +12,12 @@ storage:
   max_message_size: 10485760
   file_pool_timeout: "1h"
   cleanup_interval: "2m"
+  default_partitions: 4
+  topics:
+    - name: "orders"
+      partitions: 8
+    - name: "user-events"
+      partitions: 4
 
 metrics:
   enabled: true

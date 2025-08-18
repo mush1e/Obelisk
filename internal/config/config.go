@@ -24,13 +24,20 @@ type ServerConfig struct {
 	MaxConnections int           `yaml:"max_connections"`
 }
 
+type TopicConfig struct {
+	Name       string `yaml:"name"`
+	Partitions int    `yaml:"partitions"`
+}
+
 type StorageConfig struct {
-	DataDir         string        `yaml:"data_dir"`
-	BatchSize       uint32        `yaml:"batch_size"`
-	FlushInterval   time.Duration `yaml:"flush_interval"`
-	MaxMessageSize  uint32        `yaml:"max_message_size"`
-	FilePoolTimeout time.Duration `yaml:"file_pool_timeout"`
-	CleanupInterval time.Duration `yaml:"cleanup_interval"`
+	DataDir           string        `yaml:"data_dir"`
+	BatchSize         uint32        `yaml:"batch_size"`
+	FlushInterval     time.Duration `yaml:"flush_interval"`
+	MaxMessageSize    uint32        `yaml:"max_message_size"`
+	FilePoolTimeout   time.Duration `yaml:"file_pool_timeout"`
+	CleanupInterval   time.Duration `yaml:"cleanup_interval"`
+	DefaultPartitions int           `yaml:"default_partitions"`
+	Topics            []TopicConfig `yaml:"topics"`
 }
 
 type MetricsConfig struct {
@@ -90,6 +97,7 @@ func setDefaults(config *Config) {
 	config.Storage.MaxMessageSize = 10 * 1024 * 1024 // 10MB
 	config.Storage.FilePoolTimeout = time.Hour
 	config.Storage.CleanupInterval = 2 * time.Minute
+	config.Storage.DefaultPartitions = 4
 
 	// Metrics defaults
 	config.Metrics.Enabled = true
@@ -139,6 +147,36 @@ func (c *Config) Validate() error {
 			"max_message_size must be between 1 byte and 100MB", nil)
 	}
 	return nil
+}
+
+// GetTopicPartitions returns partition count for a topic
+func (c *Config) GetTopicPartitions(topicName string) int {
+	// Check if topic has specific config
+	for _, topic := range c.Storage.Topics {
+		if topic.Name == topicName {
+			return topic.Partitions
+		}
+	}
+
+	// Fall back to default
+	return c.Storage.DefaultPartitions
+}
+
+// SetTopicPartitions sets partition count for a topic
+func (c *Config) SetTopicPartitions(topicName string, partitions int) {
+	// Update existing topic config
+	for i := range c.Storage.Topics {
+		if c.Storage.Topics[i].Name == topicName {
+			c.Storage.Topics[i].Partitions = partitions
+			return
+		}
+	}
+
+	// Add new topic config
+	c.Storage.Topics = append(c.Storage.Topics, TopicConfig{
+		Name:       topicName,
+		Partitions: partitions,
+	})
 }
 
 // GetConfigExample returns an example YAML configuration
