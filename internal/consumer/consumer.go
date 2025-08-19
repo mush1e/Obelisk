@@ -28,14 +28,13 @@ type MessageWithPartition struct {
 // Consumer represents a consumer instance for the Obelisk message broker.
 type Consumer struct {
 	id               string
-	subscribedTopics map[string]uint64         // Topic -> Current Offset (for legacy topics)
-	partitionOffsets map[string]map[int]uint64 // Topic -> Partition -> Offset (for partitioned topics)
+	subscribedTopics sync.Map // Topic -> Current Offset (for legacy topics)
+	partitionOffsets sync.Map // Topic -> sync.Map[int]uint64 (for partitioned topics)
 	baseDir          string
 	offsetFile       string
-	mtx              sync.RWMutex
 
 	// Track messages read per partition in current poll
-	lastPollPartitionCounts map[string]map[int]int // Topic -> Partition -> MessageCount
+	lastPollPartitionCounts sync.Map // Topic -> sync.Map[int]int
 }
 
 // NewConsumer creates a new consumer subscribed to the specified topics.
@@ -49,12 +48,9 @@ func NewConsumer(baseDir, consumerID string, topics ...string) *Consumer {
 	offsetFile := filepath.Join(consumersDir, fmt.Sprintf("%s.json", consumerID))
 
 	c := &Consumer{
-		id:                      consumerID,
-		subscribedTopics:        make(map[string]uint64),
-		partitionOffsets:        make(map[string]map[int]uint64),
-		baseDir:                 baseDir,
-		offsetFile:              offsetFile,
-		lastPollPartitionCounts: make(map[string]map[int]int),
+		id:         consumerID,
+		baseDir:    baseDir,
+		offsetFile: offsetFile,
 	}
 
 	// Load existing offsets from disk
@@ -64,8 +60,8 @@ func NewConsumer(baseDir, consumerID string, topics ...string) *Consumer {
 
 	// Subscribe to requested topics
 	for _, t := range topics {
-		if _, exists := c.subscribedTopics[t]; !exists {
-			c.subscribedTopics[t] = 0 // Start from beginning if new
+		if _, exists := c.subscribedTopics.Load(t); !exists {
+			c.subscribedTopics.Store(t, uint64(0)) // Start from beginning if new
 		}
 	}
 
@@ -77,10 +73,7 @@ func NewConsumer(baseDir, consumerID string, topics ...string) *Consumer {
 
 // PollWithPartitionTracking retrieves new messages and tracks their partition origins
 func (c *Consumer) PollWithPartitionTracking(topic string) ([]MessageWithPartition, error) {
-	c.mtx.RLock()
-	_, subscribed := c.subscribedTopics[topic]
-	c.mtx.RUnlock()
-
+	_, subscribed := c.subscribedTopics.Load(topic)
 	if !subscribed {
 		return nil, obeliskErrors.NewPermanentError("poll", "not subscribed to topic",
 			fmt.Errorf("topic: %s", topic))
@@ -91,9 +84,8 @@ func (c *Consumer) PollWithPartitionTracking(topic string) ([]MessageWithPartiti
 		return c.pollPartitionedTopicWithTracking(topic)
 	} else {
 		// Legacy: single file topic
-		c.mtx.RLock()
-		offset := c.subscribedTopics[topic]
-		c.mtx.RUnlock()
+		offsetInterface, _ := c.subscribedTopics.Load(topic)
+		offset := offsetInterface.(uint64)
 
 		messages, err := c.pollLegacyTopic(topic, offset)
 		if err != nil {
@@ -127,20 +119,26 @@ func (c *Consumer) pollPartitionedTopicWithTracking(topic string) ([]MessageWith
 	var allMessages []MessageWithPartition
 
 	// Initialize partition count tracking for this poll
-	c.mtx.Lock()
-	c.lastPollPartitionCounts[topic] = make(map[int]int)
+	c.lastPollPartitionCounts.Store(topic, &sync.Map{})
 
 	// Get or initialize partition offsets for this topic
-	if _, exists := c.partitionOffsets[topic]; !exists {
-		c.partitionOffsets[topic] = make(map[int]uint64)
+	if _, exists := c.partitionOffsets.Load(topic); !exists {
+		c.partitionOffsets.Store(topic, &sync.Map{})
 	}
-	c.mtx.Unlock()
 
 	// Read from each partition starting from its own offset
 	for _, partition := range partitions {
-		c.mtx.RLock()
-		partitionOffset := c.partitionOffsets[topic][partition]
-		c.mtx.RUnlock()
+		partitionOffsetInterface, _ := c.partitionOffsets.Load(topic)
+		partitionOffsetMap := partitionOffsetInterface.(*sync.Map)
+		partitionOffsetInterface, exists := partitionOffsetMap.Load(partition)
+		var partitionOffset uint64
+		if exists {
+			partitionOffset = partitionOffsetInterface.(uint64)
+		} else {
+			partitionOffset = 0
+			// Initialize the partition offset to 0
+			partitionOffsetMap.Store(partition, uint64(0))
+		}
 
 		logFile, idxFile := storage.GetPartitionedPaths(c.baseDir, topic, partition)
 
@@ -179,9 +177,9 @@ func (c *Consumer) pollPartitionedTopicWithTracking(topic string) ([]MessageWith
 		}
 
 		// Track how many messages came from this partition
-		c.mtx.Lock()
-		c.lastPollPartitionCounts[topic][partition] = len(messages)
-		c.mtx.Unlock()
+		partitionCounts, _ := c.lastPollPartitionCounts.Load(topic)
+		partitionCountMap := partitionCounts.(*sync.Map)
+		partitionCountMap.Store(partition, len(messages))
 	}
 
 	// Sort messages by timestamp to maintain order across partitions
@@ -220,36 +218,48 @@ func (c *Consumer) CommitWithPartitionTracking(topic string) error {
 	}
 
 	// Legacy single-file topic commit (unchanged)
-	c.mtx.Lock()
-	if counts, exists := c.lastPollPartitionCounts[topic]; exists && counts[-1] > 0 {
-		c.subscribedTopics[topic] += uint64(counts[-1])
+	partitionCounts, _ := c.lastPollPartitionCounts.Load(topic)
+	legacyOffset, _ := c.subscribedTopics.Load(topic)
+	if counts, exists := partitionCounts.(*sync.Map); exists {
+		if countInterface, ok := counts.Load(-1); ok {
+			count := countInterface.(int)
+			if count > 0 {
+				c.subscribedTopics.Store(topic, legacyOffset.(uint64)+uint64(count))
+			}
+		}
 	}
-	c.mtx.Unlock()
 
 	return c.saveOffsets()
 }
 
 // commitPartitionedTopicProper properly updates offsets per partition based on actual messages read
 func (c *Consumer) commitPartitionedTopicProper(topic string) error {
-	c.mtx.Lock()
-
-	// Make sure we have partition offsets initialized
-	if _, exists := c.partitionOffsets[topic]; !exists {
-		c.partitionOffsets[topic] = make(map[int]uint64)
-	}
+	partitionOffsets, _ := c.partitionOffsets.Load(topic)
+	partitionOffsetMap := partitionOffsets.(*sync.Map)
 
 	// Update each partition's offset based on actual messages read
-	if partitionCounts, exists := c.lastPollPartitionCounts[topic]; exists {
-		for partition, count := range partitionCounts {
-			if count > 0 {
-				// Advance this partition's offset by the actual number of messages read
-				c.partitionOffsets[topic][partition] += uint64(count)
-				fmt.Printf("Consumer %s: Advanced partition %d offset by %d to %d\n",
-					c.id, partition, count, c.partitionOffsets[topic][partition])
+	partitionCounts, _ := c.lastPollPartitionCounts.Load(topic)
+	partitionCountMap := partitionCounts.(*sync.Map)
+
+	partitionCountMap.Range(func(partitionInterface, countInterface interface{}) bool {
+		partition := partitionInterface.(int)
+		count := countInterface.(int)
+		if count > 0 {
+			// Advance this partition's offset by the actual number of messages read
+			currentOffsetInterface, exists := partitionOffsetMap.Load(partition)
+			var currentOffset uint64
+			if exists {
+				currentOffset = currentOffsetInterface.(uint64)
+			} else {
+				currentOffset = 0
 			}
+			newOffset := currentOffset + uint64(count)
+			partitionOffsetMap.Store(partition, newOffset)
+			fmt.Printf("Consumer %s: Advanced partition %d offset by %d to %d\n",
+				c.id, partition, count, newOffset)
 		}
-	}
-	c.mtx.Unlock()
+		return true
+	})
 
 	return c.saveOffsets()
 }
@@ -264,52 +274,56 @@ func (c *Consumer) Commit(topic string, newOffset uint64) error {
 
 // GetCurrentOffset returns the current offset for a topic
 func (c *Consumer) GetCurrentOffset(topic string) (uint64, error) {
-	c.mtx.RLock()
-	defer c.mtx.RUnlock()
-
 	if c.isPartitionedTopic(topic) {
 		// For partitioned topics, return the sum of all partition offsets
-		total := uint64(0)
-		if partitions, exists := c.partitionOffsets[topic]; exists {
-			for _, offset := range partitions {
-				total += offset
-			}
+		partitionOffsets, exists := c.partitionOffsets.Load(topic)
+		if !exists {
+			return 0, nil
 		}
+		partitionOffsetMap := partitionOffsets.(*sync.Map)
+
+		total := uint64(0)
+		partitionOffsetMap.Range(func(partitionInterface, offsetInterface interface{}) bool {
+			offset := offsetInterface.(uint64)
+			total += offset
+			return true
+		})
 		return total, nil
 	}
 
-	offset, subscribed := c.subscribedTopics[topic]
+	offsetInterface, subscribed := c.subscribedTopics.Load(topic)
 	if !subscribed {
 		return 0, obeliskErrors.NewPermanentError("get_offset", "not subscribed to topic",
 			fmt.Errorf("topic: %s", topic))
 	}
-	return offset, nil
+	return offsetInterface.(uint64), nil
 }
 
 // Reset resets the offset to 0 AND persists it
 func (c *Consumer) Reset(topic string) error {
 	fmt.Printf("Consumer %s: Resetting offset for topic %s\n", c.id, topic)
 
-	c.mtx.Lock()
-	if _, ok := c.subscribedTopics[topic]; !ok {
-		c.mtx.Unlock()
+	_, subscribed := c.subscribedTopics.Load(topic)
+	if !subscribed {
 		return obeliskErrors.NewPermanentError("reset", "not subscribed to topic",
 			fmt.Errorf("topic: %s", topic))
 	}
 
 	// Reset legacy offset
-	c.subscribedTopics[topic] = 0
+	c.subscribedTopics.Store(topic, uint64(0))
 
 	// Reset partition offsets if they exist
-	if partitions, exists := c.partitionOffsets[topic]; exists {
-		for partition := range partitions {
-			c.partitionOffsets[topic][partition] = 0
-		}
+	if partitions, exists := c.partitionOffsets.Load(topic); exists {
+		partitionOffsetMap := partitions.(*sync.Map)
+		partitionOffsetMap.Range(func(partitionInterface, offsetInterface interface{}) bool {
+			partition := partitionInterface.(int)
+			partitionOffsetMap.Store(partition, uint64(0))
+			return true
+		})
 	}
 
 	// Clear last poll counts
-	delete(c.lastPollPartitionCounts, topic)
-	c.mtx.Unlock()
+	c.lastPollPartitionCounts.Delete(topic)
 
 	return c.saveOffsets()
 }
@@ -393,9 +407,6 @@ func (c *Consumer) loadOffsets() error {
 		return obeliskErrors.NewPermanentError("load_offsets", "failed to read offset file", err)
 	}
 
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
-
 	var offsetData map[string]interface{}
 	if err := json.Unmarshal(data, &offsetData); err != nil {
 		return obeliskErrors.NewDataError("load_offsets", "invalid offset file format", err)
@@ -405,53 +416,76 @@ func (c *Consumer) loadOffsets() error {
 		if strings.HasSuffix(key, "_partitions") {
 			topic := strings.TrimSuffix(key, "_partitions")
 			if partitionData, ok := value.(map[string]interface{}); ok {
-				c.partitionOffsets[topic] = make(map[int]uint64)
+				partitionMap := &sync.Map{}
+				c.partitionOffsets.Store(topic, partitionMap)
 				for pStr, offset := range partitionData {
 					partition, _ := strconv.Atoi(pStr)
 					if offsetFloat, ok := offset.(float64); ok {
-						c.partitionOffsets[topic][partition] = uint64(offsetFloat)
+						partitionMap.Store(partition, uint64(offsetFloat))
 					}
 				}
 			}
 		} else {
 			if offsetFloat, ok := value.(float64); ok {
-				c.subscribedTopics[key] = uint64(offsetFloat)
+				c.subscribedTopics.Store(key, uint64(offsetFloat))
 			}
 		}
 	}
 
+	// Count topics and partitioned topics
+	var topicCount, partitionedCount int
+	c.subscribedTopics.Range(func(key, value interface{}) bool {
+		topicCount++
+		return true
+	})
+	c.partitionOffsets.Range(func(key, value interface{}) bool {
+		partitionedCount++
+		return true
+	})
+
 	fmt.Printf("Consumer %s: loaded offsets for %d topics, %d partitioned topics\n",
-		c.id, len(c.subscribedTopics), len(c.partitionOffsets))
+		c.id, topicCount, partitionedCount)
 	return nil
 }
 
 func (c *Consumer) saveOffsets() error {
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
-
 	offsetData := make(map[string]interface{})
+	c.subscribedTopics.Range(func(key, value interface{}) bool {
+		offsetData[key.(string)] = value
+		return true
+	})
 
-	for topic, offset := range c.subscribedTopics {
-		offsetData[topic] = offset
-	}
-
-	for topic, partitions := range c.partitionOffsets {
+	c.partitionOffsets.Range(func(key, value interface{}) bool {
+		topic := key.(string)
 		partitionMap := make(map[string]uint64)
-		for partition, offset := range partitions {
+		partitionOffsetMap := value.(*sync.Map)
+		partitionOffsetMap.Range(func(partitionInterface, offsetInterface interface{}) bool {
+			partition := partitionInterface.(int)
+			offset := offsetInterface.(uint64)
 			partitionMap[strconv.Itoa(partition)] = offset
-		}
+			return true
+		})
 		offsetData[topic+"_partitions"] = partitionMap
-	}
+		return true
+	})
 
 	data, err := json.MarshalIndent(offsetData, "", "  ")
 	if err != nil {
 		return obeliskErrors.NewPermanentError("save_offsets", "failed to marshal offsets", err)
 	}
 
-	tempFile := c.offsetFile + ".tmp"
+	// Create a unique temp file to avoid race conditions
+	tempFile := fmt.Sprintf("%s.%d.tmp", c.offsetFile, time.Now().UnixNano())
 	if err := os.WriteFile(tempFile, data, 0644); err != nil {
 		return obeliskErrors.NewTransientError("save_offsets", "failed to write temp file", err)
 	}
+
+	// Clean up temp file on error
+	defer func() {
+		if _, err := os.Stat(tempFile); err == nil {
+			os.Remove(tempFile)
+		}
+	}()
 
 	if err := os.Rename(tempFile, c.offsetFile); err != nil {
 		return obeliskErrors.NewTransientError("save_offsets", "failed to rename offset file", err)
@@ -462,33 +496,18 @@ func (c *Consumer) saveOffsets() error {
 
 // Additional helper methods remain unchanged...
 func (c *Consumer) Subscribe(topic string) {
-	c.mtx.Lock()
-	shouldSave := false
-	if _, exists := c.subscribedTopics[topic]; !exists {
-		c.subscribedTopics[topic] = 0
-		shouldSave = true
+	_, subscribed := c.subscribedTopics.Load(topic)
+	if !subscribed {
+		c.subscribedTopics.Store(topic, uint64(0))
 	}
-	c.mtx.Unlock()
-
-	if shouldSave {
-		_ = c.saveOffsets()
-	}
+	_ = c.saveOffsets()
 }
 
 func (c *Consumer) Unsubscribe(topic string) {
-	c.mtx.Lock()
-	wasSubscribed := false
-	if _, exists := c.subscribedTopics[topic]; exists {
-		delete(c.subscribedTopics, topic)
-		delete(c.partitionOffsets, topic)
-		delete(c.lastPollPartitionCounts, topic)
-		wasSubscribed = true
-	}
-	c.mtx.Unlock()
-
-	if wasSubscribed {
-		_ = c.saveOffsets()
-	}
+	c.subscribedTopics.Delete(topic)
+	c.partitionOffsets.Delete(topic)
+	c.lastPollPartitionCounts.Delete(topic)
+	_ = c.saveOffsets()
 }
 
 func (c *Consumer) GetConsumerID() string {

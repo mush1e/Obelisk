@@ -30,17 +30,16 @@ import (
 // 1. Size-based: When a topic buffer reaches maxSize messages
 // 2. Time-based: When maxWait time has elapsed since the last flush
 //
-// TODO: use sync.Map instead of map+mutex for better read performance
-// on read-heavy workloads with many concurrent topic accesses.
+// Uses sync.Map for better read performance on read-heavy workloads
+// with many concurrent topic accesses.
 type TopicBatcher struct {
-	batches map[string]*TopicBatch
+	batches sync.Map // string -> *TopicBatch
 	baseDir string
 	maxSize uint32
 	maxWait time.Duration
 	pool    *storage.FilePool
 	health  *health.HealthTracker
 	quit    chan struct{}
-	mtx     sync.RWMutex
 	wg      sync.WaitGroup
 	config  *config.Config
 }
@@ -57,7 +56,7 @@ type TopicBatch struct {
 // NewTopicBatcher creates a new topic batcher.
 func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration, pool *storage.FilePool, health *health.HealthTracker, cfg *config.Config) *TopicBatcher {
 	return &TopicBatcher{
-		batches: make(map[string]*TopicBatch),
+		batches: sync.Map{}, // Initialize empty sync.Map
 		baseDir: baseDir,
 		maxSize: maxSize,
 		maxWait: maxWait,
@@ -104,9 +103,7 @@ func (tb *TopicBatcher) discoverExistingTopics() error {
 		return err
 	}
 
-	tb.mtx.Lock()
-	defer tb.mtx.Unlock()
-
+	// No mutex needed with sync.Map - it handles concurrency internally
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			// Check for legacy single-file topics (backward compatibility)
@@ -129,7 +126,7 @@ func (tb *TopicBatcher) discoverExistingTopics() error {
 				}
 
 				// Use topic name as key for legacy topics
-				tb.batches[topic] = batch
+				tb.batches.Store(topic, batch)
 				fmt.Printf("[BATCHER] Discovered legacy topic: %s (messages: %d)\n", topic, len(index.Positions))
 			}
 		} else {
@@ -172,7 +169,7 @@ func (tb *TopicBatcher) discoverExistingTopics() error {
 
 				// Use consistent partition key format: topic::partition
 				partitionKey := fmt.Sprintf("%s::%d", topicName, partition)
-				tb.batches[partitionKey] = batch
+				tb.batches.Store(partitionKey, batch)
 
 				fmt.Printf("[BATCHER] Discovered topic %s partition %d (messages: %d)\n",
 					topicName, partition, len(index.Positions))
@@ -185,18 +182,16 @@ func (tb *TopicBatcher) discoverExistingTopics() error {
 
 // Stop signals shutdown and waits for final flush.
 func (tb *TopicBatcher) Stop() {
-	tb.mtx.Lock()
+	// Use a simple channel-based synchronization for quit signal
 	select {
 	case <-tb.quit:
 		// Already stopped
-		tb.mtx.Unlock()
 		return
 	default:
 		close(tb.quit)
 	}
-	tb.mtx.Unlock()
 
-	// Wait for background goroutine to finish (without holding the mutex)
+	// Wait for background goroutine to finish
 	tb.wg.Wait()
 }
 
@@ -241,20 +236,17 @@ func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 	// fmt.Printf("[BATCHER] Message for topic '%s' with key '%s' -> partition %d/%d (batch key: %s)\n",
 	//	msg.Topic, msg.Key, partition, partitionCount, partitionKey)
 
-	// Cheap check
-	tb.mtx.RLock()
-	batch, exists := tb.batches[partitionKey]
-	tb.mtx.RUnlock()
+	// Try to load existing batch
+	batchInterface, exists := tb.batches.Load(partitionKey)
+	var batch *TopicBatch
 
-	if !exists {
-		tb.mtx.Lock()
-		// Double-check after acquiring write lock
-		batch, exists = tb.batches[partitionKey]
-		if !exists {
-			batch = tb.createTopicPartitionBatch(msg.Topic, partition)
-			tb.batches[partitionKey] = batch
-		}
-		tb.mtx.Unlock()
+	if exists {
+		batch = batchInterface.(*TopicBatch)
+	} else {
+		// Create new batch and try to store it atomically
+		newBatch := tb.createTopicPartitionBatch(msg.Topic, partition)
+		actualInterface, _ := tb.batches.LoadOrStore(partitionKey, newBatch)
+		batch = actualInterface.(*TopicBatch)
 	}
 
 	// Now work with the specific partition batch
@@ -279,18 +271,23 @@ func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 func (tb *TopicBatcher) FlushAll() {
 	// fmt.Printf("[BATCHER] FlushAll triggered\n")
 
-	tb.mtx.RLock()
-	snap := make([]*TopicBatch, 0, len(tb.batches))
-	batchNames := make([]string, 0, len(tb.batches))
-	for name, b := range tb.batches {
-		b.mtx.Lock()
-		if len(b.buffer) > 0 {
-			snap = append(snap, b)
+	var snap []*TopicBatch
+	var batchNames []string
+
+	// Iterate over all batches using sync.Map.Range
+	tb.batches.Range(func(keyInterface, valueInterface interface{}) bool {
+		name := keyInterface.(string)
+		batch := valueInterface.(*TopicBatch)
+
+		batch.mtx.Lock()
+		if len(batch.buffer) > 0 {
+			snap = append(snap, batch)
 			batchNames = append(batchNames, name)
 		}
-		b.mtx.Unlock()
-	}
-	tb.mtx.RUnlock()
+		batch.mtx.Unlock()
+
+		return true // continue iteration
+	})
 
 	if len(snap) > 0 {
 		// fmt.Printf("[BATCHER] Flushing %d batches: %v\n", len(snap), batchNames)
@@ -362,15 +359,15 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 // GetTopicStats returns buffered and persisted message counts.
 // Note: This needs updating for partitioned topics
 func (tb *TopicBatcher) GetTopicStats(topic string) (int, int64, error) {
-	tb.mtx.RLock()
-	defer tb.mtx.RUnlock()
-
 	totalBuffered := 0
 	totalPersisted := int64(0)
 	found := false
 
 	// Check all batches for this topic (including all partitions)
-	for key, batch := range tb.batches {
+	tb.batches.Range(func(keyInterface, valueInterface interface{}) bool {
+		key := keyInterface.(string)
+		batch := valueInterface.(*TopicBatch)
+
 		// Check if this batch belongs to the requested topic
 		if key == topic || strings.HasPrefix(key, topic+"::") {
 			found = true
@@ -379,7 +376,8 @@ func (tb *TopicBatcher) GetTopicStats(topic string) (int, int64, error) {
 			totalPersisted += int64(len(batch.index.Positions))
 			batch.mtx.Unlock()
 		}
-	}
+		return true // continue iteration
+	})
 
 	if !found {
 		return 0, 0, obeliskErrors.NewPermanentError("get_topic_stats", "topic not found",
