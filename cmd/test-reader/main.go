@@ -1,4 +1,3 @@
-// Test reader utility for displaying stored messages from topic log files.
 package main
 
 import (
@@ -57,7 +56,7 @@ func main() {
 		var allMessages []message.Message
 		for _, partitionFile := range partitionFiles {
 			partitionName := strings.TrimSuffix(filepath.Base(partitionFile), ".log")
-			
+
 			messages, err := storage.ReadAllMessages(partitionFile)
 			if err != nil {
 				log.Printf("Failed to read %s: %v", partitionFile, err)
@@ -65,7 +64,7 @@ func main() {
 			}
 
 			fmt.Printf("\n--- %s (%d messages) ---\n", partitionName, len(messages))
-			
+
 			// Show first 5 messages from each partition
 			for i, msg := range messages {
 				if i >= 5 {
