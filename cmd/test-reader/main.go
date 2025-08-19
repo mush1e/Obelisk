@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/internal/storage"
 )
 
@@ -24,43 +25,78 @@ func main() {
 
 	fmt.Printf("Reading messages from topics dir: %s\n", topicsDir)
 
-	// Discover all .log files in the topics directory
-	files, err := filepath.Glob(filepath.Join(topicsDir, "*.log"))
+	// Discover all topic directories
+	topicDirs, err := filepath.Glob(filepath.Join(topicsDir, "*"))
 	if err != nil {
-		log.Fatalf("Failed to list topic logs: %v", err)
+		log.Fatalf("Failed to list topic directories: %v", err)
 	}
 
-	if len(files) == 0 {
-		fmt.Println("No topic log files found.")
-		return
-	}
-
-	// Read and display messages from each topic log file
-	for _, file := range files {
-		// Extract topic name from file path
-		topicName := strings.TrimSuffix(filepath.Base(file), ".log")
-
-		messages, err := storage.ReadAllMessages(file)
-		if err != nil {
-			log.Printf("Failed to read %s: %v", file, err)
+	totalMessages := 0
+	for _, topicDir := range topicDirs {
+		// Check if it's a directory
+		if info, err := os.Stat(topicDir); err != nil || !info.IsDir() {
 			continue
 		}
 
-		// Sort messages chronologically within each topic
-		sort.Slice(messages, func(i, j int) bool {
-			return messages[i].Timestamp.Before(messages[j].Timestamp)
+		topicName := filepath.Base(topicDir)
+		fmt.Printf("\nTopic: %s\n", topicName)
+		fmt.Println(strings.Repeat("=", 60))
+
+		// Find all partition log files in this topic directory
+		partitionFiles, err := filepath.Glob(filepath.Join(topicDir, "partition-*.log"))
+		if err != nil {
+			log.Printf("Failed to list partition files for topic %s: %v", topicName, err)
+			continue
+		}
+
+		if len(partitionFiles) == 0 {
+			fmt.Printf("No partition log files found for topic %s\n", topicName)
+			continue
+		}
+
+		var allMessages []message.Message
+		for _, partitionFile := range partitionFiles {
+			partitionName := strings.TrimSuffix(filepath.Base(partitionFile), ".log")
+			
+			messages, err := storage.ReadAllMessages(partitionFile)
+			if err != nil {
+				log.Printf("Failed to read %s: %v", partitionFile, err)
+				continue
+			}
+
+			fmt.Printf("\n--- %s (%d messages) ---\n", partitionName, len(messages))
+			
+			// Show first 5 messages from each partition
+			for i, msg := range messages {
+				if i >= 5 {
+					fmt.Printf("... (showing first 5 messages)\n")
+					break
+				}
+				fmt.Printf("%d. [%s] %s -> %s\n",
+					i+1,
+					msg.Timestamp.Format("15:04:05.000"),
+					msg.Key,
+					truncateString(msg.Value, 50))
+			}
+
+			allMessages = append(allMessages, messages...)
+		}
+
+		// Sort all messages chronologically
+		sort.Slice(allMessages, func(i, j int) bool {
+			return allMessages[i].Timestamp.Before(allMessages[j].Timestamp)
 		})
 
-		fmt.Printf("\nTopic: %s (%d messages)\n", topicName, len(messages))
-		fmt.Println(strings.Repeat("-", 50))
-
-		// Display each message with index, timestamp, key, and value
-		for i, msg := range messages {
-			fmt.Printf("%d. %s | %s -> %s\n",
-				i+1,
-				msg.Timestamp.Format("15:04:05.000"),
-				msg.Key,
-				msg.Value)
-		}
+		fmt.Printf("\nTopic %s summary: %d total messages\n", topicName, len(allMessages))
+		totalMessages += len(allMessages)
 	}
+
+	fmt.Printf("\nGrand total: %d messages across all topics\n", totalMessages)
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

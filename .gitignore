@@ -39,3 +39,10 @@
 
 # debug information files
 *.dwo
+
+# Obelisk data files
+data/topics/
+data/consumers/
+
+# Obelisk executable
+Obelisk
