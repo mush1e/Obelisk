@@ -71,7 +71,10 @@ func NewConsumer(baseDir, consumerID string, topics ...string) *Consumer {
 	}
 
 	// Save initial state
-	c.saveOffsets()
+	if err := c.saveOffsets(); err != nil {
+		fmt.Printf("Consumer %s: failed to save initial offsets: %v\n", consumerID, err)
+		// Continue anyway, the consumer will try to save offsets later
+	}
 
 	return c
 }
@@ -510,19 +513,19 @@ func (c *Consumer) saveOffsets() error {
 }
 
 // Additional helper methods remain unchanged...
-func (c *Consumer) Subscribe(topic string) {
+func (c *Consumer) Subscribe(topic string) error {
 	_, subscribed := c.subscribedTopics.Load(topic)
 	if !subscribed {
 		c.subscribedTopics.Store(topic, uint64(0))
 	}
-	_ = c.saveOffsets()
+	return c.saveOffsets()
 }
 
-func (c *Consumer) Unsubscribe(topic string) {
+func (c *Consumer) Unsubscribe(topic string) error {
 	c.subscribedTopics.Delete(topic)
 	c.partitionOffsets.Delete(topic)
 	c.lastPollPartitionCounts.Delete(topic)
-	_ = c.saveOffsets()
+	return c.saveOffsets()
 }
 
 func (c *Consumer) GetConsumerID() string {
