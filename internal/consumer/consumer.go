@@ -2,6 +2,8 @@ package consumer
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -35,6 +37,9 @@ type Consumer struct {
 
 	// Track messages read per partition in current poll
 	lastPollPartitionCounts sync.Map // Topic -> sync.Map[int]int
+
+	// Mutex to protect offset file operations
+	offsetMutex sync.RWMutex
 }
 
 // NewConsumer creates a new consumer subscribed to the specified topics.
@@ -399,6 +404,9 @@ func (c *Consumer) pollLegacyTopic(topic string, offset uint64) ([]message.Messa
 }
 
 func (c *Consumer) loadOffsets() error {
+	c.offsetMutex.RLock()
+	defer c.offsetMutex.RUnlock()
+
 	data, err := os.ReadFile(c.offsetFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -449,6 +457,9 @@ func (c *Consumer) loadOffsets() error {
 }
 
 func (c *Consumer) saveOffsets() error {
+	c.offsetMutex.Lock()
+	defer c.offsetMutex.Unlock()
+
 	offsetData := make(map[string]interface{})
 	c.subscribedTopics.Range(func(key, value interface{}) bool {
 		offsetData[key.(string)] = value
@@ -475,7 +486,11 @@ func (c *Consumer) saveOffsets() error {
 	}
 
 	// Create a unique temp file to avoid race conditions
-	tempFile := fmt.Sprintf("%s.%d.tmp", c.offsetFile, time.Now().UnixNano())
+	randBytes := make([]byte, 8)
+	if _, err := rand.Read(randBytes); err != nil {
+		return obeliskErrors.NewPermanentError("save_offsets", "failed to generate random bytes", err)
+	}
+	tempFile := fmt.Sprintf("%s.%s.tmp", c.offsetFile, hex.EncodeToString(randBytes))
 	if err := os.WriteFile(tempFile, data, 0644); err != nil {
 		return obeliskErrors.NewTransientError("save_offsets", "failed to write temp file", err)
 	}
