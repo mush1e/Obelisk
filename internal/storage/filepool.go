@@ -189,23 +189,30 @@ func NewFilePool(timeLimit time.Duration) *FilePool {
 // The file is guaranteed to be available during the callback and protected from cleanup.
 // No manual cleanup needed - it's handled automatically!
 func (fp *FilePool) WithFile(path string, flag int, fn func(*File) error) error {
-	fp.mtx.Lock()
-
-	f, exists := fp.files[path]
-	if !exists {
-		var err error
-		f, err = NewFile(path, flag)
-		if err != nil {
-			fp.mtx.Unlock()
-			return err
+	// First, get or create the file with minimal lock time
+	var f *File
+	{
+		fp.mtx.Lock()
+		var exists bool
+		f, exists = fp.files[path]
+		if !exists {
+			var err error
+			f, err = NewFile(path, flag)
+			if err != nil {
+				fp.mtx.Unlock()
+				return err
+			}
+			fp.files[path] = f
 		}
-		fp.files[path] = f
+		fp.mtx.Unlock()
 	}
+
+	// Mark file as in use and update access time
 	f.SetLastAccessed(time.Now())
 	f.setInUse(true)
-	fp.mtx.Unlock()
-
 	defer f.setInUse(false)
+
+	// Execute the callback with the file
 	return fn(f)
 }
 
@@ -246,18 +253,21 @@ func (fp *FilePool) StartCleanup(checkInterval time.Duration) {
 
 // cleanupIdleFiles closes idle files without holding the pool lock during file operations.
 func (fp *FilePool) cleanupIdleFiles() {
-
-	fp.mtx.RLock()
+	// First pass: identify files to close with minimal lock time
 	var toClose []string
-	for path, file := range fp.files {
-		if file.GetTimeSinceAccessed() >= fp.timeLimit &&
-			!file.IsDirty() &&
-			!file.IsInUse() { // 🛡️ RACE CONDITION ELIMINATED!
-			toClose = append(toClose, path)
+	{
+		fp.mtx.RLock()
+		for path, file := range fp.files {
+			if file.GetTimeSinceAccessed() >= fp.timeLimit &&
+				!file.IsDirty() &&
+				!file.IsInUse() { // 🛡️ RACE CONDITION ELIMINATED!
+				toClose = append(toClose, path)
+			}
 		}
+		fp.mtx.RUnlock()
 	}
-	fp.mtx.RUnlock()
 
+	// Second pass: close files without holding any pool locks
 	for _, path := range toClose {
 		_ = fp.Close(path)
 	}

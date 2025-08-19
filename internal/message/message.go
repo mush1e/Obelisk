@@ -108,7 +108,7 @@ func Deserialize(data []byte) (Message, error) {
 		return msg, obeliskErrors.NewDataError("deserialize_key_length", "failed to deserialize key length", err)
 	}
 	keyBytes := make([]byte, keyLen)
-	if _, err := buf.Read(keyBytes); err != nil {
+	if err := binary.Read(buf, binary.LittleEndian, &keyBytes); err != nil {
 		return msg, obeliskErrors.NewDataError("deserialize_key_data", "failed to deserialize key data", err)
 	}
 	msg.Key = string(keyBytes)
@@ -118,7 +118,7 @@ func Deserialize(data []byte) (Message, error) {
 		return msg, obeliskErrors.NewDataError("deserialize_value_length", "failed to deserialize value length", err)
 	}
 	valBytes := make([]byte, valLen)
-	if _, err := buf.Read(valBytes); err != nil {
+	if err := binary.Read(buf, binary.LittleEndian, &valBytes); err != nil {
 		return msg, obeliskErrors.NewDataError("deserialize_value_data", "failed to deserialize value data", err)
 	}
 	msg.Value = string(valBytes)

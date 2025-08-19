@@ -185,7 +185,18 @@ func (tb *TopicBatcher) discoverExistingTopics() error {
 
 // Stop signals shutdown and waits for final flush.
 func (tb *TopicBatcher) Stop() {
-	close(tb.quit)
+	tb.mtx.Lock()
+	select {
+	case <-tb.quit:
+		// Already stopped
+		tb.mtx.Unlock()
+		return
+	default:
+		close(tb.quit)
+	}
+	tb.mtx.Unlock()
+
+	// Wait for background goroutine to finish (without holding the mutex)
 	tb.wg.Wait()
 }
 
@@ -205,7 +216,7 @@ func (tb *TopicBatcher) createTopicPartitionBatch(topic string, partition int) *
 		index = &storage.OffsetIndex{Positions: []int64{}}
 	}
 
-	fmt.Printf("[BATCHER] Created batch for topic %s partition %d\n", topic, partition)
+	// fmt.Printf("[BATCHER] Created batch for topic %s partition %d\n", topic, partition)
 
 	return &TopicBatch{
 		buffer:  make([]message.Message, 0, tb.maxSize),
@@ -226,9 +237,9 @@ func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 	// Create a consistent partition key for batching: topic::partition
 	partitionKey := fmt.Sprintf("%s::%d", msg.Topic, partition)
 
-	// Debug logging
-	fmt.Printf("[BATCHER] Message for topic '%s' with key '%s' -> partition %d/%d (batch key: %s)\n",
-		msg.Topic, msg.Key, partition, partitionCount, partitionKey)
+	// Debug logging (disabled for performance)
+	// fmt.Printf("[BATCHER] Message for topic '%s' with key '%s' -> partition %d/%d (batch key: %s)\n",
+	//	msg.Topic, msg.Key, partition, partitionCount, partitionKey)
 
 	// Cheap check
 	tb.mtx.RLock()
@@ -250,14 +261,15 @@ func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 	batch.mtx.Lock()
 	batch.buffer = append(batch.buffer, msg)
 	shouldFlush := len(batch.buffer) >= int(tb.maxSize)
-	bufferSize := len(batch.buffer)
 	batch.mtx.Unlock()
 
-	fmt.Printf("[BATCHER] Added message to %s (buffer size: %d/%d)\n",
-		partitionKey, bufferSize, tb.maxSize)
+	// Debug logging disabled for performance
+	// bufferSize := len(batch.buffer)
+	// fmt.Printf("[BATCHER] Added message to %s (buffer size: %d/%d)\n",
+	//	partitionKey, bufferSize, tb.maxSize)
 
 	if shouldFlush {
-		fmt.Printf("[BATCHER] Triggering flush for %s (buffer full)\n", partitionKey)
+		// fmt.Printf("[BATCHER] Triggering flush for %s (buffer full)\n", partitionKey)
 		return tb.flushTopic(batch)
 	}
 	return nil
@@ -265,7 +277,7 @@ func (tb *TopicBatcher) AddMessage(msg message.Message) error {
 
 // FlushAll flushes all batches with pending messages.
 func (tb *TopicBatcher) FlushAll() {
-	fmt.Printf("[BATCHER] FlushAll triggered\n")
+	// fmt.Printf("[BATCHER] FlushAll triggered\n")
 
 	tb.mtx.RLock()
 	snap := make([]*TopicBatch, 0, len(tb.batches))
@@ -281,7 +293,7 @@ func (tb *TopicBatcher) FlushAll() {
 	tb.mtx.RUnlock()
 
 	if len(snap) > 0 {
-		fmt.Printf("[BATCHER] Flushing %d batches: %v\n", len(snap), batchNames)
+		// fmt.Printf("[BATCHER] Flushing %d batches: %v\n", len(snap), batchNames)
 	}
 
 	for i, b := range snap {
@@ -308,7 +320,7 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 	idxFile := batch.idxFile
 	batch.mtx.Unlock()
 
-	fmt.Printf("[BATCHER] Flushing %d messages to %s\n", len(local), logFile)
+	// fmt.Printf("[BATCHER] Flushing %d messages to %s\n", len(local), logFile)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -342,7 +354,7 @@ func (tb *TopicBatcher) flushTopic(batch *TopicBatch) error {
 		return err
 	}
 
-	fmt.Printf("[BATCHER] Successfully flushed %d messages to %s\n", len(local), logFile)
+	// fmt.Printf("[BATCHER] Successfully flushed %d messages to %s\n", len(local), logFile)
 	// File automatically released when WithFile callback exits
 	return nil
 }

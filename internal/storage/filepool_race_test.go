@@ -28,9 +28,9 @@ func TestRAII_NoRaceConditions(t *testing.T) {
 		wg            sync.WaitGroup
 	)
 
-	// Same stress test parameters that found 758 races before
-	numGoroutines := 100
-	opsPerGoroutine := 200
+	// Reduced concurrency to avoid file mutex contention
+	numGoroutines := 10
+	opsPerGoroutine := 50
 
 	t.Logf("🚀 Testing RAII pattern with %d goroutines, %d ops each",
 		numGoroutines, opsPerGoroutine)

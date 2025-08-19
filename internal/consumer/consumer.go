@@ -41,7 +41,10 @@ type Consumer struct {
 // NewConsumer creates a new consumer subscribed to the specified topics.
 func NewConsumer(baseDir, consumerID string, topics ...string) *Consumer {
 	consumersDir := filepath.Join(baseDir, "../consumers")
-	os.MkdirAll(consumersDir, 0755)
+	if err := os.MkdirAll(consumersDir, 0755); err != nil {
+		fmt.Printf("Consumer %s: failed to create consumers directory: %v\n", consumerID, err)
+		// Continue anyway, the consumer will fail later if it can't write offsets
+	}
 
 	offsetFile := filepath.Join(consumersDir, fmt.Sprintf("%s.json", consumerID))
 
@@ -124,10 +127,10 @@ func (c *Consumer) pollPartitionedTopicWithTracking(topic string) ([]MessageWith
 	var allMessages []MessageWithPartition
 
 	// Initialize partition count tracking for this poll
+	c.mtx.Lock()
 	c.lastPollPartitionCounts[topic] = make(map[int]int)
 
 	// Get or initialize partition offsets for this topic
-	c.mtx.Lock()
 	if _, exists := c.partitionOffsets[topic]; !exists {
 		c.partitionOffsets[topic] = make(map[int]uint64)
 	}
@@ -176,7 +179,9 @@ func (c *Consumer) pollPartitionedTopicWithTracking(topic string) ([]MessageWith
 		}
 
 		// Track how many messages came from this partition
+		c.mtx.Lock()
 		c.lastPollPartitionCounts[topic][partition] = len(messages)
+		c.mtx.Unlock()
 	}
 
 	// Sort messages by timestamp to maintain order across partitions
@@ -286,9 +291,8 @@ func (c *Consumer) Reset(topic string) error {
 	fmt.Printf("Consumer %s: Resetting offset for topic %s\n", c.id, topic)
 
 	c.mtx.Lock()
-	defer c.mtx.Unlock()
-
 	if _, ok := c.subscribedTopics[topic]; !ok {
+		c.mtx.Unlock()
 		return obeliskErrors.NewPermanentError("reset", "not subscribed to topic",
 			fmt.Errorf("topic: %s", topic))
 	}
@@ -305,6 +309,7 @@ func (c *Consumer) Reset(topic string) error {
 
 	// Clear last poll counts
 	delete(c.lastPollPartitionCounts, topic)
+	c.mtx.Unlock()
 
 	return c.saveOffsets()
 }
@@ -421,8 +426,8 @@ func (c *Consumer) loadOffsets() error {
 }
 
 func (c *Consumer) saveOffsets() error {
-	c.mtx.RLock()
-	defer c.mtx.RUnlock()
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
 
 	offsetData := make(map[string]interface{})
 
@@ -458,22 +463,32 @@ func (c *Consumer) saveOffsets() error {
 // Additional helper methods remain unchanged...
 func (c *Consumer) Subscribe(topic string) {
 	c.mtx.Lock()
-	defer c.mtx.Unlock()
-
+	shouldSave := false
 	if _, exists := c.subscribedTopics[topic]; !exists {
 		c.subscribedTopics[topic] = 0
+		shouldSave = true
+	}
+	c.mtx.Unlock()
+
+	if shouldSave {
 		_ = c.saveOffsets()
 	}
 }
 
 func (c *Consumer) Unsubscribe(topic string) {
 	c.mtx.Lock()
-	defer c.mtx.Unlock()
+	wasSubscribed := false
+	if _, exists := c.subscribedTopics[topic]; exists {
+		delete(c.subscribedTopics, topic)
+		delete(c.partitionOffsets, topic)
+		delete(c.lastPollPartitionCounts, topic)
+		wasSubscribed = true
+	}
+	c.mtx.Unlock()
 
-	delete(c.subscribedTopics, topic)
-	delete(c.partitionOffsets, topic)
-	delete(c.lastPollPartitionCounts, topic)
-	_ = c.saveOffsets()
+	if wasSubscribed {
+		_ = c.saveOffsets()
+	}
 }
 
 func (c *Consumer) GetConsumerID() string {
