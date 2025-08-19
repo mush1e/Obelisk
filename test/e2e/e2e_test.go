@@ -157,7 +157,7 @@ func (e *E2ETestSuite) StopServer() {
 		select {
 		case <-done:
 			// Process exited gracefully
-		case <-time.After(5 * time.Second):
+		case <-time.After(2 * time.Second):
 			// Force kill if it doesn't exit
 			e.serverProcess.Process.Kill()
 			e.serverProcess.Wait()
@@ -420,6 +420,7 @@ func TestConcurrentProducers(t *testing.T) {
 
 	var wg sync.WaitGroup
 	var allMessages []message.Message
+	var messagesMutex sync.Mutex
 
 	for p := 0; p < numProducers; p++ {
 		wg.Add(1)
@@ -442,9 +443,9 @@ func TestConcurrentProducers(t *testing.T) {
 			}
 
 			// Thread-safe append
-			func() {
-				allMessages = append(allMessages, producerMessages...)
-			}()
+			messagesMutex.Lock()
+			allMessages = append(allMessages, producerMessages...)
+			messagesMutex.Unlock()
 		}(p)
 	}
 
@@ -568,7 +569,7 @@ func TestServerRecovery(t *testing.T) {
 	}
 
 	// Wait for persistence
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Stop server
 	suite.StopServer()
@@ -633,7 +634,7 @@ func TestHighLoadPerformance(t *testing.T) {
 	sendTime := time.Since(start)
 
 	// Wait for batching to complete
-	time.Sleep(5 * time.Second)
+	time.Sleep(2 * time.Second)
 
 	// Verify all messages
 	c := consumer.NewConsumer(filepath.Join(suite.tempDir, "data/topics"), "performance-consumer", topic)
