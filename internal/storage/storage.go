@@ -131,6 +131,13 @@ func (idx *OffsetIndex) GetPosition(offset uint64) (int64, error) {
 	return idx.Positions[offset], nil
 }
 
+// GetPositionCount returns the number of positions in the index safely.
+func (idx *OffsetIndex) GetPositionCount() int {
+	idx.mtx.RLock()
+	defer idx.mtx.RUnlock()
+	return len(idx.Positions)
+}
+
 // AppendMessage appends a single message atomically and updates its index.
 func AppendMessage(pool *FilePool, logFile, idxFile string, msg message.Message, idx *OffsetIndex) error {
 	if pool == nil {

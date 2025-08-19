@@ -33,15 +33,16 @@ import (
 // Uses sync.Map for better read performance on read-heavy workloads
 // with many concurrent topic accesses.
 type TopicBatcher struct {
-	batches sync.Map // string -> *TopicBatch
-	baseDir string
-	maxSize uint32
-	maxWait time.Duration
-	pool    *storage.FilePool
-	health  *health.HealthTracker
-	quit    chan struct{}
-	wg      sync.WaitGroup
-	config  *config.Config
+	batches      sync.Map // string -> *TopicBatch
+	baseDir      string
+	maxSize      uint32
+	maxWait      time.Duration
+	pool         *storage.FilePool
+	health       *health.HealthTracker
+	quit         chan struct{}
+	wg           sync.WaitGroup
+	config       *config.Config
+	startStopMtx sync.Mutex // Protects Start/Stop operations
 }
 
 // TopicBatch holds buffered messages and storage metadata for a single topic.
@@ -69,6 +70,8 @@ func NewTopicBatcher(baseDir string, maxSize uint32, maxWait time.Duration, pool
 
 // Start initializes the batcher and starts background flush routine.
 func (tb *TopicBatcher) Start() error {
+	tb.startStopMtx.Lock()
+	defer tb.startStopMtx.Unlock()
 
 	if err := os.MkdirAll(tb.baseDir, 0755); err != nil {
 		return obeliskErrors.NewConfigurationError("start_batcher", "failed to create base directory", err)
@@ -182,6 +185,9 @@ func (tb *TopicBatcher) discoverExistingTopics() error {
 
 // Stop signals shutdown and waits for final flush.
 func (tb *TopicBatcher) Stop() {
+	tb.startStopMtx.Lock()
+	defer tb.startStopMtx.Unlock()
+
 	// Use a simple channel-based synchronization for quit signal
 	select {
 	case <-tb.quit:
@@ -373,8 +379,10 @@ func (tb *TopicBatcher) GetTopicStats(topic string) (int, int64, error) {
 			found = true
 			batch.mtx.Lock()
 			totalBuffered += len(batch.buffer)
-			totalPersisted += int64(len(batch.index.Positions))
 			batch.mtx.Unlock()
+
+			// Use the index's public method to safely get position count
+			totalPersisted += int64(batch.index.GetPositionCount())
 		}
 		return true // continue iteration
 	})
