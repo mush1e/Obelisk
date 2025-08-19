@@ -28,24 +28,25 @@ func main() {
 	defer conn.Close()
 
 	writer := bufio.NewWriter(conn)
+	reader := bufio.NewReader(conn)
 
 	// Run the specified test scenario
 	switch *testType {
 	case "size":
-		testSizeBatching(writer)
+		testSizeBatching(writer, reader)
 	case "time":
-		testTimeBatching(writer)
+		testTimeBatching(writer, reader)
 	case "realistic":
-		testRealisticLoad(writer)
+		testRealisticLoad(writer, reader)
 	case "partition":
-		testPartitioning(writer)
+		testPartitioning(writer, reader)
 	default:
 		fmt.Println("Unknown test type. Use: size, time, realistic, or partition")
 	}
 }
 
 // testPartitioning tests the partitioning functionality
-func testPartitioning(writer *bufio.Writer) {
+func testPartitioning(writer *bufio.Writer, reader *bufio.Reader) {
 	fmt.Println("Testing partitioning with consistent topic names...")
 	fmt.Println("Sending messages to 'orders' topic with different keys")
 	fmt.Println("Keys with same hash should go to same partition")
@@ -80,6 +81,14 @@ func testPartitioning(writer *bufio.Writer) {
 		msgBytes, _ := message.Serialize(msg)
 		if err := protocol.WriteMessage(writer, msgBytes); err != nil {
 			log.Printf("Error sending message %d: %v", i, err)
+			continue
+		}
+
+		// Read response from server
+		_, err := reader.ReadString('\n')
+		if err != nil {
+			log.Printf("Error reading response for message %d: %v", i, err)
+			continue
 		}
 
 		fmt.Printf("Sent: Topic=%s, Key=%s, Value='Order %d for %s'\n",
@@ -99,7 +108,7 @@ func testPartitioning(writer *bufio.Writer) {
 
 // testSizeBatching tests size-based batch flushing by sending 150 messages quickly.
 // This should trigger multiple flushes when the batch size limit (100) is reached.
-func testSizeBatching(writer *bufio.Writer) {
+func testSizeBatching(writer *bufio.Writer, reader *bufio.Reader) {
 	fmt.Println("Testing size-based batching (sending 150 messages quickly)...")
 
 	start := time.Now()
@@ -119,10 +128,18 @@ func testSizeBatching(writer *bufio.Writer) {
 		msgBytes, _ := message.Serialize(msg)
 		if err := protocol.WriteMessage(writer, msgBytes); err != nil {
 			log.Printf("Error sending message %d: %v", i, err)
+			continue
+		}
+
+		// Read response from server
+		response, err := reader.ReadString('\n')
+		if err != nil {
+			log.Printf("Error reading response for message %d: %v", i, err)
+			continue
 		}
 
 		if i%50 == 0 {
-			fmt.Printf("Sent %d messages...\n", i)
+			fmt.Printf("Sent %d messages... (last response: %s)", i, response)
 		}
 	}
 
@@ -132,7 +149,7 @@ func testSizeBatching(writer *bufio.Writer) {
 
 // testTimeBatching tests time-based batch flushing by sending messages with delays.
 // This should trigger flushes based on the time threshold (5 seconds) rather than size.
-func testTimeBatching(writer *bufio.Writer) {
+func testTimeBatching(writer *bufio.Writer, reader *bufio.Reader) {
 	fmt.Println("Testing time-based batching (5 messages with 2s delays)...")
 
 	for i := 0; i < 5; i++ {
@@ -149,9 +166,19 @@ func testTimeBatching(writer *bufio.Writer) {
 
 		// Send message and wait to test time-based flushing
 		msgBytes, _ := message.Serialize(msg)
-		protocol.WriteMessage(writer, msgBytes)
+		if err := protocol.WriteMessage(writer, msgBytes); err != nil {
+			log.Printf("Error sending message %d: %v", i, err)
+			continue
+		}
 
-		fmt.Printf("Sent message %d to topic '%s', waiting 2 seconds...\n", i+1, topic)
+		// Read response from server
+		response, err := reader.ReadString('\n')
+		if err != nil {
+			log.Printf("Error reading response for message %d: %v", i, err)
+			continue
+		}
+
+		fmt.Printf("Sent message %d to topic '%s' (response: %s), waiting 2 seconds...\n", i+1, topic, response)
 		time.Sleep(2 * time.Second)
 	}
 
@@ -162,7 +189,7 @@ func testTimeBatching(writer *bufio.Writer) {
 
 // testRealisticLoad simulates a realistic message load with variable delays.
 // This tests how the batcher performs under more realistic usage patterns.
-func testRealisticLoad(writer *bufio.Writer) {
+func testRealisticLoad(writer *bufio.Writer, reader *bufio.Reader) {
 	fmt.Println("Testing realistic load (messages over time)...")
 
 	for i := 0; i < 50; i++ {
@@ -179,7 +206,17 @@ func testRealisticLoad(writer *bufio.Writer) {
 
 		// Send message with variable delays to simulate real usage
 		msgBytes, _ := message.Serialize(msg)
-		protocol.WriteMessage(writer, msgBytes)
+		if err := protocol.WriteMessage(writer, msgBytes); err != nil {
+			log.Printf("Error sending message %d: %v", i, err)
+			continue
+		}
+
+		// Read response from server
+		_, err := reader.ReadString('\n')
+		if err != nil {
+			log.Printf("Error reading response for message %d: %v", i, err)
+			continue
+		}
 
 		// Variable delays between 50-500ms to simulate realistic traffic
 		delay := time.Duration(50+i*10) * time.Millisecond

@@ -115,15 +115,19 @@ func (t *TCPServer) acceptLoop() {
 				return
 			default:
 				// Track connection errors
-				metrics.Metrics.ConnectionErrors.WithLabelValues("accept_error").Inc()
+				if metrics.Metrics != nil {
+					metrics.Metrics.ConnectionErrors.WithLabelValues("accept_error").Inc()
+				}
 				fmt.Println("Accept error:", err)
 				continue
 			}
 		}
 
 		// Track new connections
-		metrics.Metrics.ConnectionsTotal.Inc()
-		metrics.Metrics.ActiveConnections.Inc()
+		if metrics.Metrics != nil {
+			metrics.Metrics.ConnectionsTotal.Inc()
+			metrics.Metrics.ActiveConnections.Inc()
+		}
 
 		fmt.Println("New client connected:", conn.RemoteAddr())
 
@@ -136,7 +140,11 @@ func (t *TCPServer) acceptLoop() {
 func (t *TCPServer) handleConnection(conn net.Conn) {
 	defer t.wg.Done()
 	defer conn.Close()
-	defer metrics.Metrics.ActiveConnections.Dec() // Track disconnection
+	defer func() {
+		if metrics.Metrics != nil {
+			metrics.Metrics.ActiveConnections.Dec()
+		}
+	}() // Track disconnection
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
@@ -167,21 +175,29 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 					fmt.Println("Client disconnected:", conn.RemoteAddr())
 					return
 				case obeliskErrors.GetErrorType(err) == obeliskErrors.ErrorTypeData:
-					metrics.Metrics.ConnectionErrors.WithLabelValues("data_corruption").Inc()
+					if metrics.Metrics != nil {
+						metrics.Metrics.ConnectionErrors.WithLabelValues("data_corruption").Inc()
+					}
 					fmt.Printf("Corrupted message from %s: %v\n", conn.RemoteAddr(), err)
 					t.sendNack(conn, writer, "CORRUPTED")
 					continue
 				case obeliskErrors.GetErrorType(err) == obeliskErrors.ErrorTypePermanent:
-					metrics.Metrics.ConnectionErrors.WithLabelValues("protocol_violation").Inc()
+					if metrics.Metrics != nil {
+						metrics.Metrics.ConnectionErrors.WithLabelValues("protocol_violation").Inc()
+					}
 					fmt.Printf("Protocol violation from %s: %v\n", conn.RemoteAddr(), err)
 					t.sendNack(conn, writer, "PROTOCOL_ERROR")
 					return
 				case obeliskErrors.IsRetryable(err):
-					metrics.Metrics.ConnectionErrors.WithLabelValues("transient_error").Inc()
+					if metrics.Metrics != nil {
+						metrics.Metrics.ConnectionErrors.WithLabelValues("transient_error").Inc()
+					}
 					fmt.Printf("Transient error from %s: %v\n", conn.RemoteAddr(), err)
 					continue
 				default:
-					metrics.Metrics.ConnectionErrors.WithLabelValues("network_error").Inc()
+					if metrics.Metrics != nil {
+						metrics.Metrics.ConnectionErrors.WithLabelValues("network_error").Inc()
+					}
 					fmt.Printf("Connection error from %s: %v\n", conn.RemoteAddr(), err)
 					return
 				}
@@ -190,7 +206,9 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 			msg, err := message.Deserialize(msgBytes)
 			if err != nil {
 				// Track deserialization errors
-				metrics.Metrics.ConnectionErrors.WithLabelValues("invalid_message").Inc()
+				if metrics.Metrics != nil {
+					metrics.Metrics.ConnectionErrors.WithLabelValues("invalid_message").Inc()
+				}
 				fmt.Printf("Invalid message format from %s: %v\n", conn.RemoteAddr(), err)
 				t.sendNack(conn, writer, "INVALID_FORMAT")
 				continue
@@ -205,7 +223,9 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 
 			if err != nil {
 				// Track publish failures
-				metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "publish_failed").Inc()
+				if metrics.Metrics != nil {
+					metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "publish_failed").Inc()
+				}
 				fmt.Printf("Failed to publish message: %v\n", err)
 				t.sendNack(conn, writer, "PUBLISH_FAILED")
 				continue
@@ -227,7 +247,9 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 
 			if err != nil {
 				// Track acknowledgment failures
-				metrics.Metrics.ConnectionErrors.WithLabelValues("ack_failed").Inc()
+				if metrics.Metrics != nil {
+					metrics.Metrics.ConnectionErrors.WithLabelValues("ack_failed").Inc()
+				}
 				fmt.Printf("Failed to send acknowledgment: %v\n", err)
 				// Connection might be broken, exit handler
 				return

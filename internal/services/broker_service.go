@@ -35,13 +35,17 @@ func (s *BrokerService) GetHealthTracker() *health.HealthTracker {
 // PublishMessage saves a message (used by both TCP and HTTP!)
 func (s *BrokerService) PublishMessage(msg *message.Message) error {
 	// 📊 Track message received
-	metrics.Metrics.MessagesReceived.WithLabelValues(msg.Topic).Inc()
+	if metrics.Metrics != nil {
+		metrics.Metrics.MessagesReceived.WithLabelValues(msg.Topic).Inc()
+	}
 
 	// Save to memory for fast access
 	if err := s.buffers.Push(*msg); err != nil {
 		// Track buffer failures
 		// is buffer failure even possible?
-		metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "buffer_full").Inc()
+		if metrics.Metrics != nil {
+			metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "buffer_full").Inc()
+		}
 		// Continue to storage even if buffer fails
 		s.healthTracker.RecordBufferPublish(false)
 	} else {
@@ -52,13 +56,17 @@ func (s *BrokerService) PublishMessage(msg *message.Message) error {
 	err := s.batcher.AddMessage(*msg)
 	if err != nil {
 		// 📊 Track storage failures
-		metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "storage_error").Inc()
+		if metrics.Metrics != nil {
+			metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "storage_error").Inc()
+		}
 		s.healthTracker.RecordBatcherPublish(false)
 		return err
 	}
 
 	// 📊 Track successful storage
-	metrics.Metrics.MessagesStored.WithLabelValues(msg.Topic).Inc()
+	if metrics.Metrics != nil {
+		metrics.Metrics.MessagesStored.WithLabelValues(msg.Topic).Inc()
+	}
 	s.healthTracker.RecordBatcherPublish(true)
 	return nil
 }
@@ -67,7 +75,7 @@ func (s *BrokerService) PublishMessage(msg *message.Message) error {
 func (s *BrokerService) GetTopicStats(topic string) (int, int64, error) {
 	buffered, persisted, err := s.batcher.GetTopicStats(topic)
 
-	if err == nil {
+	if err == nil && metrics.Metrics != nil {
 		// 📊 Update buffer size metric
 		metrics.Metrics.BufferSize.WithLabelValues(topic).Set(float64(buffered))
 	}
