@@ -10,14 +10,14 @@ build: ## Build the binary
 	go build -o obelisk cmd/Obelisk/main.go
 
 ## Run
-run: kill ## Run the server
+run: ## Run the server
 	go run cmd/Obelisk/main.go
 
-dev: kill ## Run in development mode with auto-restart
+dev: ## Run in development mode with auto-restart
 	go run cmd/Obelisk/main.go &
 
 ## Test
-test: kill ## Run all tests
+test: ## Run all tests
 	go test -v -timeout 60s ./...
 
 ## Clean up
