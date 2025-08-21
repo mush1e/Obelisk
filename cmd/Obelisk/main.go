@@ -32,8 +32,6 @@ func main() {
 	logPath, idxPath := storage.GetPartitionedPaths("data/topics", "orders", 2)
 	fmt.Printf("Partition paths: %s, %s\n", logPath, idxPath)
 
-	// Metrics are now initialized within the server components as needed
-
 	// Graceful shutdown
 	gracefulShutdown := make(chan os.Signal, 1)
 	signal.Notify(gracefulShutdown, syscall.SIGINT, syscall.SIGTERM)
