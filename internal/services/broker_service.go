@@ -3,6 +3,7 @@ package services
 import (
 	"github.com/mush1e/obelisk/internal/batch"
 	"github.com/mush1e/obelisk/internal/buffer"
+	"github.com/mush1e/obelisk/internal/consumer"
 	"github.com/mush1e/obelisk/internal/health"
 	"github.com/mush1e/obelisk/internal/message"
 	"github.com/mush1e/obelisk/internal/metrics"
@@ -13,14 +14,16 @@ type BrokerService struct {
 	batcher       *batch.TopicBatcher
 	healthTracker *health.HealthTracker
 	metrics       *metrics.BrokerMetrics
+	groupManager  *consumer.ConsumerGroupManager
 }
 
-func NewBrokerService(buffers *buffer.TopicBuffers, batcher *batch.TopicBatcher, metrics *metrics.BrokerMetrics) *BrokerService {
+func NewBrokerService(buffers *buffer.TopicBuffers, batcher *batch.TopicBatcher, metrics *metrics.BrokerMetrics, baseDir string) *BrokerService {
 	return &BrokerService{
 		buffers:       buffers,
 		batcher:       batcher,
 		healthTracker: health.NewHealthTracker(),
 		metrics:       metrics,
+		groupManager:  consumer.NewConsumerGroupManager(baseDir),
 	}
 }
 
@@ -32,6 +35,41 @@ func (s *BrokerService) SetBatcher(batcher *batch.TopicBatcher) {
 // GetHealthTracker returns the health tracker
 func (s *BrokerService) GetHealthTracker() *health.HealthTracker {
 	return s.healthTracker
+}
+
+// Consumer Group Management Methods
+
+// CreateConsumerGroup creates a new consumer group for the specified topics
+func (s *BrokerService) CreateConsumerGroup(groupID string, topics []string) (*consumer.ConsumerGroup, error) {
+	return s.groupManager.CreateGroup(groupID, topics)
+}
+
+// GetConsumerGroup retrieves an existing consumer group
+func (s *BrokerService) GetConsumerGroup(groupID string) (*consumer.ConsumerGroup, error) {
+	return s.groupManager.GetGroup(groupID)
+}
+
+// JoinConsumerGroup adds a consumer to a group
+func (s *BrokerService) JoinConsumerGroup(groupID, memberID string, consumerInstance *consumer.Consumer) error {
+	group, err := s.groupManager.GetGroup(groupID)
+	if err != nil {
+		return err
+	}
+	return group.JoinGroup(memberID, consumerInstance)
+}
+
+// LeaveConsumerGroup removes a consumer from a group
+func (s *BrokerService) LeaveConsumerGroup(groupID, memberID string) error {
+	group, err := s.groupManager.GetGroup(groupID)
+	if err != nil {
+		return err
+	}
+	return group.LeaveGroup(memberID)
+}
+
+// GetConsumerGroupManager returns the group manager for advanced operations
+func (s *BrokerService) GetConsumerGroupManager() *consumer.ConsumerGroupManager {
+	return s.groupManager
 }
 
 // PublishMessage saves a message (used by both TCP and HTTP!)

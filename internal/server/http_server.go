@@ -53,7 +53,13 @@ func NewHTTPServer(addr string, brokerService *services.BrokerService, metrics *
 	// Topics POST endpoint to send topic based messages
 	mux.Handle("POST /topics/{topic}/messages", handlers.PostMessageHandler(brokerService))
 
-	// 📊 Prometheus metrics endpoint
+	// Consumer Groups Management endpoints
+	mux.Handle("POST /consumer-groups", handlers.CreateConsumerGroupHandler(brokerService))
+	mux.Handle("GET /consumer-groups/{groupId}", handlers.GetConsumerGroupHandler(brokerService))
+	mux.Handle("POST /consumer-groups/{groupId}/members", handlers.JoinConsumerGroupHandler(brokerService))
+	mux.Handle("DELETE /consumer-groups/{groupId}/members/{memberId}", handlers.LeaveConsumerGroupHandler(brokerService))
+
+	// Prometheus metrics endpoint
 	mux.Handle("GET /metrics", promhttp.Handler())
 
 	return &HTTPServer{

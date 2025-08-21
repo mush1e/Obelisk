@@ -55,7 +55,7 @@ func NewServer(tcpAddr, httpAddr, logFilePath string) *Server {
 	}
 
 	topicBuffers := buffer.NewTopicBuffers(100)
-	brokerService := services.NewBrokerService(topicBuffers, nil, nil) // Will be updated after batcher creation
+	brokerService := services.NewBrokerService(topicBuffers, nil, nil, "data/topics") // Will be updated after batcher creation
 	batcher := batch.NewTopicBatcher(logFilePath, 100, time.Second*5, pool, brokerService.GetHealthTracker(), cfg)
 	brokerService.SetBatcher(batcher) // Update the broker service with the batcher
 	tcpServer := NewTCPServer(tcpAddr, brokerService, nil)
@@ -83,7 +83,7 @@ func NewServerWithConfig(cfg *config.Config) *Server {
 	}
 
 	topicBuffers := buffer.NewTopicBuffers(100)
-	brokerService := services.NewBrokerService(topicBuffers, nil, brokerMetrics)
+	brokerService := services.NewBrokerService(topicBuffers, nil, brokerMetrics, cfg.Storage.DataDir)
 
 	batcher := batch.NewTopicBatcher(
 		cfg.Storage.DataDir,
