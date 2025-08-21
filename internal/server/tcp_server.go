@@ -263,7 +263,7 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 func (t *TCPServer) sendNack(conn net.Conn, w *bufio.Writer, reason string) {
 	// Set a write deadline to avoid blocking on slow clients
 	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	_, _ = w.WriteString(fmt.Sprintf("NACK:%s\n", reason))
+	_, _ = fmt.Fprintf(w, "NACK:%s\n", reason)
 	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	_ = w.Flush()
 }

@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -41,34 +40,6 @@ type Server struct {
 	brokerService *services.BrokerService
 	metrics       *metrics.BrokerMetrics
 	wg            sync.WaitGroup
-}
-
-// NewServer creates a new server with TCP/HTTP addresses and storage path. [DEPRECATED]
-func NewServer(tcpAddr, httpAddr, logFilePath string) *Server {
-	pool := storage.NewFilePool(time.Hour)
-	pool.StartCleanup(time.Minute * 2)
-
-	cfg, err := config.LoadConfig("")
-	if err != nil {
-		fmt.Printf("Failed to load config: %v\n", err)
-		os.Exit(1)
-	}
-
-	topicBuffers := buffer.NewTopicBuffers(100)
-	brokerService := services.NewBrokerService(topicBuffers, nil, nil, "data/topics") // Will be updated after batcher creation
-	batcher := batch.NewTopicBatcher(logFilePath, 100, time.Second*5, pool, brokerService.GetHealthTracker(), cfg)
-	brokerService.SetBatcher(batcher) // Update the broker service with the batcher
-	tcpServer := NewTCPServer(tcpAddr, brokerService, nil)
-	httpServer := NewHTTPServer(httpAddr, brokerService, nil)
-
-	return &Server{
-		tcpServer:     tcpServer,
-		httpServer:    httpServer,
-		batcher:       batcher,
-		topicBuffers:  topicBuffers,
-		pool:          pool,
-		brokerService: brokerService,
-	}
 }
 
 // NewServerWithConfig creates a server using configuration
