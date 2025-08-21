@@ -43,6 +43,7 @@
 # Obelisk data files
 data/topics/
 data/consumers/
+data/groups/
 
 # Obelisk executable
 Obelisk
