@@ -716,6 +716,10 @@ func TestDataIntegrity(t *testing.T) {
 
 // TestMultipleTopics tests handling of multiple topics simultaneously
 func TestMultipleTopics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping multiple topics test in short mode")
+	}
+
 	suite := NewE2ETestSuite(t)
 	defer suite.StopServer()
 
