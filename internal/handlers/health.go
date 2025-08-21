@@ -38,7 +38,7 @@ type HealthSummary struct {
 }
 
 // EnhancedHealth creates an HTTP handler for comprehensive health check endpoints
-func EnhancedHealth(brokerService *services.BrokerService) http.Handler {
+func EnhancedHealth(brokerService *services.BrokerService, metrics *metrics.BrokerMetrics) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
@@ -57,7 +57,7 @@ func EnhancedHealth(brokerService *services.BrokerService) http.Handler {
 		summary := calculateSummary(components)
 
 		// Record metrics
-		recordHealthMetrics(overallStatus, components)
+		recordHealthMetrics(overallStatus, components, metrics)
 
 		response := HealthResponse{
 			Status:     overallStatus,
@@ -83,14 +83,16 @@ func EnhancedHealth(brokerService *services.BrokerService) http.Handler {
 		w.Header().Set("X-Health-Check-Duration", duration.String())
 
 		// Record health check duration metric
-		metrics.Metrics.HealthCheckDuration.WithLabelValues("health").Observe(duration.Seconds())
+		if metrics != nil {
+			metrics.HealthCheckDuration.WithLabelValues("health").Observe(duration.Seconds())
+		}
 
 		json.NewEncoder(w).Encode(response)
 	})
 }
 
 // ReadinessCheck creates an HTTP handler for Kubernetes readiness probes
-func ReadinessCheck(brokerService *services.BrokerService) http.Handler {
+func ReadinessCheck(brokerService *services.BrokerService, metrics *metrics.BrokerMetrics) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
@@ -105,7 +107,9 @@ func ReadinessCheck(brokerService *services.BrokerService) http.Handler {
 			})
 
 			// Record metrics
-			metrics.Metrics.HealthCheckDuration.WithLabelValues("ready").Observe(time.Since(start).Seconds())
+			if metrics != nil {
+				metrics.HealthCheckDuration.WithLabelValues("ready").Observe(time.Since(start).Seconds())
+			}
 			return
 		}
 
@@ -126,7 +130,9 @@ func ReadinessCheck(brokerService *services.BrokerService) http.Handler {
 			})
 
 			// Record metrics
-			metrics.Metrics.HealthCheckDuration.WithLabelValues("ready").Observe(time.Since(start).Seconds())
+			if metrics != nil {
+				metrics.HealthCheckDuration.WithLabelValues("ready").Observe(time.Since(start).Seconds())
+			}
 			return
 		}
 
@@ -136,12 +142,14 @@ func ReadinessCheck(brokerService *services.BrokerService) http.Handler {
 		})
 
 		// Record metrics
-		metrics.Metrics.HealthCheckDuration.WithLabelValues("ready").Observe(time.Since(start).Seconds())
+		if metrics != nil {
+			metrics.HealthCheckDuration.WithLabelValues("ready").Observe(time.Since(start).Seconds())
+		}
 	})
 }
 
 // LivenessCheck creates an HTTP handler for Kubernetes liveness probes
-func LivenessCheck(brokerService *services.BrokerService) http.Handler {
+func LivenessCheck(brokerService *services.BrokerService, metrics *metrics.BrokerMetrics) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
@@ -154,7 +162,9 @@ func LivenessCheck(brokerService *services.BrokerService) http.Handler {
 		})
 
 		// Record metrics
-		metrics.Metrics.HealthCheckDuration.WithLabelValues("live").Observe(time.Since(start).Seconds())
+		if metrics != nil {
+			metrics.HealthCheckDuration.WithLabelValues("live").Observe(time.Since(start).Seconds())
+		}
 	})
 }
 
@@ -300,7 +310,7 @@ func calculateSummary(components map[string]Component) HealthSummary {
 }
 
 // recordHealthMetrics records health-related metrics to Prometheus
-func recordHealthMetrics(overallStatus string, components map[string]Component) {
+func recordHealthMetrics(overallStatus string, components map[string]Component, metrics *metrics.BrokerMetrics) {
 	// Record overall health status
 	statusValue := 0.0
 	switch overallStatus {
@@ -311,7 +321,9 @@ func recordHealthMetrics(overallStatus string, components map[string]Component) 
 	case "unhealthy":
 		statusValue = 0.0
 	}
-	metrics.Metrics.HealthStatus.WithLabelValues("overall").Set(statusValue)
+	if metrics != nil {
+		metrics.HealthStatus.WithLabelValues("overall").Set(statusValue)
+	}
 
 	// Record individual component health
 	for name, component := range components {
@@ -324,6 +336,8 @@ func recordHealthMetrics(overallStatus string, components map[string]Component) 
 		case "unhealthy":
 			componentValue = 0.0
 		}
-		metrics.Metrics.ComponentHealth.WithLabelValues(name, component.Status).Set(componentValue)
+		if metrics != nil {
+			metrics.ComponentHealth.WithLabelValues(name, component.Status).Set(componentValue)
+		}
 	}
 }

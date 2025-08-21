@@ -207,11 +207,3 @@ func NewBrokerMetrics() *BrokerMetrics {
 		),
 	}
 }
-
-// Global metrics instance (initialized in main)
-var Metrics *BrokerMetrics
-
-// InitMetrics initializes the global metrics instance
-func InitMetrics() {
-	Metrics = NewBrokerMetrics()
-}

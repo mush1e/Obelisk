@@ -10,6 +10,7 @@ import (
 	"github.com/mush1e/obelisk/internal/batch"
 	"github.com/mush1e/obelisk/internal/buffer"
 	"github.com/mush1e/obelisk/internal/config"
+	"github.com/mush1e/obelisk/internal/metrics"
 	"github.com/mush1e/obelisk/internal/services"
 	"github.com/mush1e/obelisk/internal/storage"
 
@@ -38,6 +39,7 @@ type Server struct {
 	topicBuffers  *buffer.TopicBuffers
 	pool          *storage.FilePool
 	brokerService *services.BrokerService
+	metrics       *metrics.BrokerMetrics
 	wg            sync.WaitGroup
 }
 
@@ -53,11 +55,11 @@ func NewServer(tcpAddr, httpAddr, logFilePath string) *Server {
 	}
 
 	topicBuffers := buffer.NewTopicBuffers(100)
-	brokerService := services.NewBrokerService(topicBuffers, nil) // Will be updated after batcher creation
+	brokerService := services.NewBrokerService(topicBuffers, nil, nil) // Will be updated after batcher creation
 	batcher := batch.NewTopicBatcher(logFilePath, 100, time.Second*5, pool, brokerService.GetHealthTracker(), cfg)
 	brokerService.SetBatcher(batcher) // Update the broker service with the batcher
-	tcpServer := NewTCPServer(tcpAddr, brokerService)
-	httpServer := NewHTTPServer(httpAddr, brokerService)
+	tcpServer := NewTCPServer(tcpAddr, brokerService, nil)
+	httpServer := NewHTTPServer(httpAddr, brokerService, nil)
 
 	return &Server{
 		tcpServer:     tcpServer,
@@ -74,8 +76,14 @@ func NewServerWithConfig(cfg *config.Config) *Server {
 	pool := storage.NewFilePool(cfg.Storage.FilePoolTimeout)
 	pool.StartCleanup(cfg.Storage.CleanupInterval)
 
+	// Create metrics if enabled
+	var brokerMetrics *metrics.BrokerMetrics
+	if cfg.Metrics.Enabled {
+		brokerMetrics = metrics.NewBrokerMetrics()
+	}
+
 	topicBuffers := buffer.NewTopicBuffers(100)
-	brokerService := services.NewBrokerService(topicBuffers, nil)
+	brokerService := services.NewBrokerService(topicBuffers, nil, brokerMetrics)
 
 	batcher := batch.NewTopicBatcher(
 		cfg.Storage.DataDir,
@@ -87,8 +95,8 @@ func NewServerWithConfig(cfg *config.Config) *Server {
 	)
 
 	brokerService.SetBatcher(batcher)
-	tcpServer := NewTCPServer(cfg.Server.TCPAddr, brokerService)
-	httpServer := NewHTTPServer(cfg.Server.HTTPAddr, brokerService)
+	tcpServer := NewTCPServer(cfg.Server.TCPAddr, brokerService, brokerMetrics)
+	httpServer := NewHTTPServer(cfg.Server.HTTPAddr, brokerService, brokerMetrics)
 
 	return &Server{
 		tcpServer:     tcpServer,
@@ -97,6 +105,7 @@ func NewServerWithConfig(cfg *config.Config) *Server {
 		topicBuffers:  topicBuffers,
 		pool:          pool,
 		brokerService: brokerService,
+		metrics:       brokerMetrics,
 	}
 }
 

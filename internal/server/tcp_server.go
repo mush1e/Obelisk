@@ -40,15 +40,17 @@ type TCPServer struct {
 	quit     chan struct{}  // Channel for coordinating graceful shutdown across goroutines
 	wg       sync.WaitGroup // Ensures all connection goroutines complete before shutdown
 	service  *services.BrokerService
+	metrics  *metrics.BrokerMetrics // Optional metrics instance for tracking connection/message stats
 }
 
 // NewTCPServer creates a new TCP server with the specified address and message handler.
 //   - *TCPServer: Configured server instance ready to start accepting connections
-func NewTCPServer(address string, service *services.BrokerService) *TCPServer {
+func NewTCPServer(address string, service *services.BrokerService, metrics *metrics.BrokerMetrics) *TCPServer {
 	return &TCPServer{
 		address: address,
 		quit:    make(chan struct{}), // Unbuffered channel for shutdown coordination
 		service: service,
+		metrics: metrics,
 	}
 }
 
@@ -115,8 +117,8 @@ func (t *TCPServer) acceptLoop() {
 				return
 			default:
 				// Track connection errors
-				if metrics.Metrics != nil {
-					metrics.Metrics.ConnectionErrors.WithLabelValues("accept_error").Inc()
+				if t.metrics != nil {
+					t.metrics.ConnectionErrors.WithLabelValues("accept_error").Inc()
 				}
 				fmt.Println("Accept error:", err)
 				continue
@@ -124,9 +126,9 @@ func (t *TCPServer) acceptLoop() {
 		}
 
 		// Track new connections
-		if metrics.Metrics != nil {
-			metrics.Metrics.ConnectionsTotal.Inc()
-			metrics.Metrics.ActiveConnections.Inc()
+		if t.metrics != nil {
+			t.metrics.ConnectionsTotal.Inc()
+			t.metrics.ActiveConnections.Inc()
 		}
 
 		fmt.Println("New client connected:", conn.RemoteAddr())
@@ -141,8 +143,8 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 	defer t.wg.Done()
 	defer conn.Close()
 	defer func() {
-		if metrics.Metrics != nil {
-			metrics.Metrics.ActiveConnections.Dec()
+		if t.metrics != nil {
+			t.metrics.ActiveConnections.Dec()
 		}
 	}() // Track disconnection
 
@@ -175,28 +177,28 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 					fmt.Println("Client disconnected:", conn.RemoteAddr())
 					return
 				case obeliskErrors.GetErrorType(err) == obeliskErrors.ErrorTypeData:
-					if metrics.Metrics != nil {
-						metrics.Metrics.ConnectionErrors.WithLabelValues("data_corruption").Inc()
+					if t.metrics != nil {
+						t.metrics.ConnectionErrors.WithLabelValues("data_corruption").Inc()
 					}
 					fmt.Printf("Corrupted message from %s: %v\n", conn.RemoteAddr(), err)
 					t.sendNack(conn, writer, "CORRUPTED")
 					continue
 				case obeliskErrors.GetErrorType(err) == obeliskErrors.ErrorTypePermanent:
-					if metrics.Metrics != nil {
-						metrics.Metrics.ConnectionErrors.WithLabelValues("protocol_violation").Inc()
+					if t.metrics != nil {
+						t.metrics.ConnectionErrors.WithLabelValues("protocol_violation").Inc()
 					}
 					fmt.Printf("Protocol violation from %s: %v\n", conn.RemoteAddr(), err)
 					t.sendNack(conn, writer, "PROTOCOL_ERROR")
 					return
 				case obeliskErrors.IsRetryable(err):
-					if metrics.Metrics != nil {
-						metrics.Metrics.ConnectionErrors.WithLabelValues("transient_error").Inc()
+					if t.metrics != nil {
+						t.metrics.ConnectionErrors.WithLabelValues("transient_error").Inc()
 					}
 					fmt.Printf("Transient error from %s: %v\n", conn.RemoteAddr(), err)
 					continue
 				default:
-					if metrics.Metrics != nil {
-						metrics.Metrics.ConnectionErrors.WithLabelValues("network_error").Inc()
+					if t.metrics != nil {
+						t.metrics.ConnectionErrors.WithLabelValues("network_error").Inc()
 					}
 					fmt.Printf("Connection error from %s: %v\n", conn.RemoteAddr(), err)
 					return
@@ -206,8 +208,8 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 			msg, err := message.Deserialize(msgBytes)
 			if err != nil {
 				// Track deserialization errors
-				if metrics.Metrics != nil {
-					metrics.Metrics.ConnectionErrors.WithLabelValues("invalid_message").Inc()
+				if t.metrics != nil {
+					t.metrics.ConnectionErrors.WithLabelValues("invalid_message").Inc()
 				}
 				fmt.Printf("Invalid message format from %s: %v\n", conn.RemoteAddr(), err)
 				t.sendNack(conn, writer, "INVALID_FORMAT")
@@ -223,8 +225,8 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 
 			if err != nil {
 				// Track publish failures
-				if metrics.Metrics != nil {
-					metrics.Metrics.MessagesFailed.WithLabelValues(msg.Topic, "publish_failed").Inc()
+				if t.metrics != nil {
+					t.metrics.MessagesFailed.WithLabelValues(msg.Topic, "publish_failed").Inc()
 				}
 				fmt.Printf("Failed to publish message: %v\n", err)
 				t.sendNack(conn, writer, "PUBLISH_FAILED")
@@ -247,8 +249,8 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 
 			if err != nil {
 				// Track acknowledgment failures
-				if metrics.Metrics != nil {
-					metrics.Metrics.ConnectionErrors.WithLabelValues("ack_failed").Inc()
+				if t.metrics != nil {
+					t.metrics.ConnectionErrors.WithLabelValues("ack_failed").Inc()
 				}
 				fmt.Printf("Failed to send acknowledgment: %v\n", err)
 				// Connection might be broken, exit handler

@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/mush1e/obelisk/internal/handlers"
+	"github.com/mush1e/obelisk/internal/metrics"
 	"github.com/mush1e/obelisk/internal/services"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -31,19 +32,19 @@ type HTTPServer struct {
 }
 
 // NewHTTPServer creates a new HTTP server instance with configured routes and middleware.
-func NewHTTPServer(addr string, brokerService *services.BrokerService) *HTTPServer {
+func NewHTTPServer(addr string, brokerService *services.BrokerService, metrics *metrics.BrokerMetrics) *HTTPServer {
 	// Create HTTP router and configure endpoint handlers
 	mux := http.NewServeMux()
 
 	// Enhanced health check endpoints for comprehensive monitoring
 	// Main health endpoint with detailed component status
-	mux.Handle("GET /health", handlers.EnhancedHealth(brokerService))
+	mux.Handle("GET /health", handlers.EnhancedHealth(brokerService, metrics))
 
 	// Kubernetes readiness probe - checks if service is ready to accept traffic
-	mux.Handle("GET /health/ready", handlers.ReadinessCheck(brokerService))
+	mux.Handle("GET /health/ready", handlers.ReadinessCheck(brokerService, metrics))
 
 	// Kubernetes liveness probe - checks if service is alive and responding
-	mux.Handle("GET /health/live", handlers.LivenessCheck(brokerService))
+	mux.Handle("GET /health/live", handlers.LivenessCheck(brokerService, metrics))
 
 	// Statistics endpoint for operational monitoring and capacity planning
 	// Requires topic query parameter and returns JSON with buffer/persist counts
