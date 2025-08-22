@@ -38,6 +38,11 @@ type Consumer struct {
 	// Track messages read per partition in current poll
 	lastPollPartitionCounts sync.Map // Topic -> sync.Map[int]int
 
+	// Consumer group integration
+	groupID             string
+	assignedPartitions  sync.Map // Topic -> []int (partitions assigned to this consumer)
+	partitionAssignMode bool     // Whether to enforce partition assignments
+
 	// Mutex to protect offset file operations
 	offsetMutex sync.RWMutex
 }
@@ -117,12 +122,27 @@ func (c *Consumer) PollWithPartitionTracking(topic string) ([]MessageWithPartiti
 func (c *Consumer) pollPartitionedTopicWithTracking(topic string) ([]MessageWithPartition, error) {
 	fmt.Printf("Consumer %s: Polling partitioned topic %s with tracking\n", c.id, topic)
 
-	partitions, err := c.discoverPartitions(topic)
-	if err != nil {
-		return nil, err
-	}
+	// Determine which partitions to read from
+	var partitions []int
+	var err error
 
-	fmt.Printf("Consumer %s: Found %d partitions for topic %s\n", c.id, len(partitions), topic)
+	if c.IsInConsumerGroup() {
+		// Consumer group mode: only read from assigned partitions
+		partitions = c.GetAssignedPartitions(topic)
+		if len(partitions) == 0 {
+			fmt.Printf("Consumer %s: No partitions assigned for topic %s in group %s\n", c.id, topic, c.groupID)
+			return []MessageWithPartition{}, nil
+		}
+		fmt.Printf("Consumer %s: Reading from assigned partitions %v for topic %s (group %s)\n",
+			c.id, partitions, topic, c.groupID)
+	} else {
+		// Standalone mode: discover and read from all partitions
+		partitions, err = c.discoverPartitions(topic)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Printf("Consumer %s: Found %d partitions for topic %s (standalone mode)\n", c.id, len(partitions), topic)
+	}
 
 	var allMessages []MessageWithPartition
 
@@ -249,7 +269,7 @@ func (c *Consumer) commitPartitionedTopicProper(topic string) error {
 	partitionCounts, _ := c.lastPollPartitionCounts.Load(topic)
 	partitionCountMap := partitionCounts.(*sync.Map)
 
-	partitionCountMap.Range(func(partitionInterface, countInterface interface{}) bool {
+	partitionCountMap.Range(func(partitionInterface, countInterface any) bool {
 		partition := partitionInterface.(int)
 		count := countInterface.(int)
 		if count > 0 {
@@ -291,7 +311,7 @@ func (c *Consumer) GetCurrentOffset(topic string) (uint64, error) {
 		partitionOffsetMap := partitionOffsets.(*sync.Map)
 
 		total := uint64(0)
-		partitionOffsetMap.Range(func(partitionInterface, offsetInterface interface{}) bool {
+		partitionOffsetMap.Range(func(partitionInterface, offsetInterface any) bool {
 			offset := offsetInterface.(uint64)
 			total += offset
 			return true
@@ -323,7 +343,7 @@ func (c *Consumer) Reset(topic string) error {
 	// Reset partition offsets if they exist
 	if partitions, exists := c.partitionOffsets.Load(topic); exists {
 		partitionOffsetMap := partitions.(*sync.Map)
-		partitionOffsetMap.Range(func(partitionInterface, offsetInterface interface{}) bool {
+		partitionOffsetMap.Range(func(partitionInterface, offsetInterface any) bool {
 			partition := partitionInterface.(int)
 			partitionOffsetMap.Store(partition, uint64(0))
 			return true
@@ -339,7 +359,8 @@ func (c *Consumer) Reset(topic string) error {
 // Helper methods (unchanged from original)
 
 func (c *Consumer) isPartitionedTopic(topic string) bool {
-	topicDir := filepath.Join(c.baseDir, topic)
+	topicsDir := filepath.Join(c.baseDir, "topics")
+	topicDir := filepath.Join(topicsDir, topic)
 	if stat, err := os.Stat(topicDir); err == nil && stat.IsDir() {
 		return true
 	}
@@ -347,7 +368,8 @@ func (c *Consumer) isPartitionedTopic(topic string) bool {
 }
 
 func (c *Consumer) discoverPartitions(topic string) ([]int, error) {
-	topicDir := filepath.Join(c.baseDir, topic)
+	topicsDir := filepath.Join(c.baseDir, "topics")
+	topicDir := filepath.Join(topicsDir, topic)
 	entries, err := os.ReadDir(topicDir)
 	if err != nil {
 		return nil, obeliskErrors.NewPermanentError("discover_partitions", "failed to read topic directory", err)
@@ -418,7 +440,7 @@ func (c *Consumer) loadOffsets() error {
 		return obeliskErrors.NewPermanentError("load_offsets", "failed to read offset file", err)
 	}
 
-	var offsetData map[string]interface{}
+	var offsetData map[string]any
 	if err := json.Unmarshal(data, &offsetData); err != nil {
 		return obeliskErrors.NewDataError("load_offsets", "invalid offset file format", err)
 	}
@@ -426,7 +448,7 @@ func (c *Consumer) loadOffsets() error {
 	for key, value := range offsetData {
 		if strings.HasSuffix(key, "_partitions") {
 			topic := strings.TrimSuffix(key, "_partitions")
-			if partitionData, ok := value.(map[string]interface{}); ok {
+			if partitionData, ok := value.(map[string]any); ok {
 				partitionMap := &sync.Map{}
 				c.partitionOffsets.Store(topic, partitionMap)
 				for pStr, offset := range partitionData {
@@ -445,11 +467,11 @@ func (c *Consumer) loadOffsets() error {
 
 	// Count topics and partitioned topics
 	var topicCount, partitionedCount int
-	c.subscribedTopics.Range(func(key, value interface{}) bool {
+	c.subscribedTopics.Range(func(key, value any) bool {
 		topicCount++
 		return true
 	})
-	c.partitionOffsets.Range(func(key, value interface{}) bool {
+	c.partitionOffsets.Range(func(key, value any) bool {
 		partitionedCount++
 		return true
 	})
@@ -463,17 +485,17 @@ func (c *Consumer) saveOffsets() error {
 	c.offsetMutex.Lock()
 	defer c.offsetMutex.Unlock()
 
-	offsetData := make(map[string]interface{})
-	c.subscribedTopics.Range(func(key, value interface{}) bool {
+	offsetData := make(map[string]any)
+	c.subscribedTopics.Range(func(key, value any) bool {
 		offsetData[key.(string)] = value
 		return true
 	})
 
-	c.partitionOffsets.Range(func(key, value interface{}) bool {
+	c.partitionOffsets.Range(func(key, value any) bool {
 		topic := key.(string)
 		partitionMap := make(map[string]uint64)
 		partitionOffsetMap := value.(*sync.Map)
-		partitionOffsetMap.Range(func(partitionInterface, offsetInterface interface{}) bool {
+		partitionOffsetMap.Range(func(partitionInterface, offsetInterface any) bool {
 			partition := partitionInterface.(int)
 			offset := offsetInterface.(uint64)
 			partitionMap[strconv.Itoa(partition)] = offset
@@ -579,4 +601,44 @@ func (c *Consumer) GetTopicMessageCount(topic string) (int64, error) {
 	})
 
 	return count, err
+}
+
+// SetConsumerGroupInfo configures the consumer for consumer group mode
+func (c *Consumer) SetConsumerGroupInfo(groupID string, assignedPartitions map[string][]int) {
+	c.groupID = groupID
+	c.partitionAssignMode = true
+
+	// Store partition assignments for each topic
+	for topic, partitions := range assignedPartitions {
+		c.assignedPartitions.Store(topic, partitions)
+	}
+
+	fmt.Printf("Consumer %s: Configured for group %s with partition assignments: %v\n",
+		c.id, groupID, assignedPartitions)
+}
+
+// ClearConsumerGroupInfo removes consumer group configuration (standalone mode)
+func (c *Consumer) ClearConsumerGroupInfo() {
+	c.groupID = ""
+	c.partitionAssignMode = false
+	c.assignedPartitions = sync.Map{}
+
+	fmt.Printf("Consumer %s: Switched to standalone mode\n", c.id)
+}
+
+// GetAssignedPartitions returns the partitions assigned to this consumer for a topic
+func (c *Consumer) GetAssignedPartitions(topic string) []int {
+	if !c.partitionAssignMode {
+		return nil // In standalone mode, no specific assignments
+	}
+
+	if partitions, exists := c.assignedPartitions.Load(topic); exists {
+		return partitions.([]int)
+	}
+	return []int{}
+}
+
+// IsInConsumerGroup returns whether this consumer is part of a consumer group
+func (c *Consumer) IsInConsumerGroup() bool {
+	return c.partitionAssignMode && c.groupID != ""
 }
